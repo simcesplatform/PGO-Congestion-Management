@@ -15,7 +15,7 @@ One of the distribution management system's (DMS) application systems resposible
 **Workflow of the PGO**
 
 
-1- In the first epoch, Grid component in the SimCES environment publishes the network information system (NIS) and customerInformation System (CIS) to the RabbitMQ broker topics "Init.NIS.#" and "Init.CIS.CustomerInfo" respectively. By listening to the topics, PGO has access to NIS and CIS data.
+1- In the first epoch, Grid component in the SimCES environment publishes the network information system (NIS) and customer information system (CIS) to the RabbitMQ broker topics "Init.NIS.#" and "Init.CIS.CustomerInfo" respectively. By listening to the topics, PGO has access to NIS and CIS data.
 
 2- Grid component in the SimCES environment publishes predictive flow state of the distribution network (for the day ahead) to the RabbitMQ broker's topic "NetworkForecaststate.#". By listening to the topic, PGO reads the forecasts data.
 
