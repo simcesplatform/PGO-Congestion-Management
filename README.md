@@ -60,4 +60,4 @@ slf4j-nop-1.7.25.jar
 
 The AMQP connector tool available at [1](https://kannisto.github.io/Cocop.AmqpMathToolConnector) is useful when the receiver (in this case PGO) has no control on inbound messages coming from Rabbitmq broker.
 
-The AMQP connector tool available at [2](https://git.ain.rd.tut.fi/procemplus/amqpmathtoolintegration) is useful when the reciver (in this case PGO) requires to control the arrival of inbound messages. Since the internal functionality of PGO is demanding, controlling the inbound message arrivals gives the oppurtunity to the PGO to get a new message from the broker only when PGO is idle. 
+The AMQP connector tool available at [2](https://git.ain.rd.tut.fi/procemplus/amqpmathtoolintegration) is useful when the receiver (in this case PGO) requires to control the arrival of inbound messages fron rabbitmq broker. Since the internal functionality of PGO is demanding, controlling the inbound message arrivals gives the oppurtunity to the PGO to get a new message from the broker only when PGO is idle. 
