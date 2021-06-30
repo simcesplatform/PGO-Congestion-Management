@@ -1265,7 +1265,7 @@ classdef PredictiveGridOptimization < handle
                 end
                 obj.FlexNeed(i).RealPowerMin.Value=RealPowerMin/1000; % Divided by 1000 to make it kW
                 obj.FlexNeed(i).RealPowerMin.UnitOfMeasure="kW";
-%                 obj.FlexNeed(i).RealPower.TimeIndex=obj.FlexNeed(i).ActivationTime;  % for tanjim
+%                 obj.FlexNeed(i).RealPower.TimeIndex=obj.FlexNeed(i).ActivationTime;  % for tanji
 %                 obj.FlexNeed(i).RealPower.Series.Regulation.Values=RealPowerMin/1000; % for tanjim
                 obj.FlexNeed(i).RealPower.Series.Regulation.UnitOfMeasure="kW";
                 
