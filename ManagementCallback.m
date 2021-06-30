@@ -77,7 +77,7 @@ InboundMessage.PredictiveGridOptimization.OverloadingBaseline=1;
 InboundMessage.PredictiveGridOptimization.AmberloadingBaseline=0.9;
 
 NumOfSimRun=1;
-Object(NumOfSimRun)=PredictiveGridOptimization("simexe30","SimTest30",PGOName,"Grid",20,1.05,0.95,0.01,0.01,1,0.9);   
+Object(NumOfSimRun)=PredictiveGridOptimization("simexe30","SimTest30",PGOName,"Grid",40,1.05,0.95,0.01,0.01,1,0.9);   
 Object(NumOfSimRun).Main;
 % InboundMessage.SimulationSpecificExchange='simexe31';
 % InboundMessage.SimulationId='SimTest31';

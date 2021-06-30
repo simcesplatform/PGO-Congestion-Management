@@ -17,10 +17,28 @@ NumOfSimRun=0;
 Handles={};
 States={};
 
+% the specs are for RTDS lab server connection.
 
-amqpPropsM = eu.cocop.amqp2math.AmqpPropsManager('localhost','procem-management','guest','guest'); % the specs are for RTDS lab server.
-amqpPropsM.setSecure(false);
-amqpPropsM.setPort(5672);
+% amqpPropsM = eu.cocop.amqp2math.AmqpPropsManager('localhost','procem-management','guest','guest'); 
+% amqpPropsM.setSecure(false);
+% amqpPropsM.setPort(5672);
+% amqpPropsM.setExchangeDurable(true); 
+% amqpPropsM.setExchangeAutoDelete(false);
+% topicsIn = javaArray('java.lang.String',1);
+% topicsIn(1) = java.lang.String('Start'); 
+% amqpConnectorM = eu.cocop.amqp2math.AmqpConnector(amqpPropsM, topicsIn);
+% disp('Conected to the management exchange')
+% 
+% % Listener
+% notifier = amqpConnectorM.getNotifierForTopic('Start');
+% handleObj = handle(notifier, 'CallbackProperties');
+% set(notifier, 'ListenCallback', @(handleObj, ev)ManagementCallback(handleObj, ev));
+
+
+the specs are for Cyber secusrity lab server.
+amqpPropsM = eu.cocop.amqp2math.AmqpPropsManager('amqp.ain.rd.tut.fi','procem-management','procem-all','simu09LATION'); 
+amqpPropsM.setSecure(true);
+amqpPropsM.setPort(45671);
 amqpPropsM.setExchangeDurable(true); 
 amqpPropsM.setExchangeAutoDelete(false);
 topicsIn = javaArray('java.lang.String',1);
@@ -32,7 +50,6 @@ disp('Conected to the management exchange')
 notifier = amqpConnectorM.getNotifierForTopic('Start');
 handleObj = handle(notifier, 'CallbackProperties');
 set(notifier, 'ListenCallback', @(handleObj, ev)ManagementCallback(handleObj, ev));
-
 
 
 

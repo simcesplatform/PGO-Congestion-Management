@@ -13,8 +13,10 @@ classdef PredictiveGridOptimization < handle
         LowerAmberBandVoltage
         OverloadingBaseline
         AmberLoadingBaseline
-        G
-        Distances
+        GR
+        GX
+        DistancesR
+        DistancesX
         
         % Initialization (Epoch 1)
         NIS
@@ -29,8 +31,13 @@ classdef PredictiveGridOptimization < handle
         BranchReactance
         Susceptance
         RS
-        SensitivityMatrix    % [R] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
+        SensitivityMatrixR    % [R] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
+        SensitivityMatrixX    % [X] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
+        SensitivityMatrixZ   % [Z] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
         NISBranchData       % NISBranchData are stored in this property if branch data comes earlier than bus data
+        Zbase
+        Ibase
+        
         
         % Epoch
         Epoch
@@ -154,8 +161,8 @@ classdef PredictiveGridOptimization < handle
             AmqpProps.setSecure(false);
             AmqpProps.setPort(5672);   % Default AMQP port
 %            AmqpProps.setPort(45671);   % Default AMQP port
-%            AmqpProps.setExchangeDurable(false);    % Uncomment this line if settings in the AMQP broker is activated
-%            AmqpProps.setExchangeAutoDelete(true);  % Uncomment this line if settings in the AMQP broker is activated
+%             AmqpProps.setExchangeDurable(false);    % Uncomment this line if settings in the AMQP broker is activated
+%             AmqpProps.setExchangeAutoDelete(true);  % Uncomment this line if settings in the AMQP broker is activated
             
             topicsIn = javaArray('java.lang.String',9); % PGO needs to at least listen to 8 different topics as mentioned below
             topicsIn(1) = java.lang.String('SimState'); % PGO needs to SimState topic published by Simulation Manager
@@ -188,8 +195,9 @@ classdef PredictiveGridOptimization < handle
                     str = char(mystr);  %    Making the input into a character array
                     obj.InboundMessage = jsondecode(str'); % decoding JSON data. please note that jsondecode for Matlab versions 2018 and later receives only row vectors.(that's why str is str')
                     obj.MessageCounterInbound=obj.MessageCounterInbound+1; % inbound message counter
-                    disp(['MessageType:' obj.InboundMessage.Type])
+                    %disp(['MessageType:' obj.InboundMessage.Type])
                     %disp(['SimulationId:' obj.InboundMessage.SimulationId])
+                    %ReceivedMessage=obj.InboundMessage
 
                     if strcmp(obj.SimulationId,obj.InboundMessage.SimulationId) % making sure that incoming message belong to the current simulation run
 
@@ -305,13 +313,16 @@ classdef PredictiveGridOptimization < handle
                            TempViolation=string(zeros(obj.ForecastLengthVoltage,1));
                            TempVioDir=string(zeros(obj.ForecastLengthVoltage,1));
 
+                           BusName=obj.InboundMessage.Bus;
+                           Node=obj.InboundMessage.Node;
                            Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
                            NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
                            Vmin1=(obj.MinVoltage+obj.LowerAmberBandVoltage)*NominalVoltage;  % kV
-                           Vmax1=(obj.MaxVoltage-obj.UpperAmberBandVoltage)*NominalVoltage;  % kV
+                           Vmax1=(obj.MaxVoltage-obj.UpperAmberBandVoltage)*NominalVoltage; % kV
                            Vmin2=obj.MinVoltage*NominalVoltage;  % kV
-                           Vmax2=obj.MaxVoltage*NominalVoltage;  % kV
-
+                           Vmax2=obj.MaxVoltage*NominalVoltage; % kV
+                           Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values;
+                           
                            %%%%% Voltage level analysis
                            for i=1:obj.ForecastLengthVoltage
                                VoltageViolationFlag=0;
@@ -354,13 +365,13 @@ classdef PredictiveGridOptimization < handle
                            end
                             warning('off')     % this is needed to supress the warning messages in command window. The reason of the warning is that by adding new rows to the VoltageForecast table, some columns still donot have value.
                             obj.VoltageForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
+                            obj.VoltageForecasts.Voltage(From:To,:)=obj.InboundMessage.Forecast.Series.Magnitude.Values;
+                            obj.VoltageForecasts.Violation(From:To,:)=TempViolation;
                             obj.VoltageForecasts.BusNumber(From:To,:)=Row;
                             obj.VoltageForecasts.BusName(From:To,:)=obj.InboundMessage.Bus;
                             obj.VoltageForecasts.Node(From:To,:)=obj.InboundMessage.Node;
-                            obj.VoltageForecasts.Voltage(From:To,:)=obj.InboundMessage.Forecast.Series.Magnitude.Values;
                             obj.VoltageForecasts.Angle(From:To,:)=obj.InboundMessage.Forecast.Series.Angle.Values;
                             obj.VoltageForecasts.Status(From:To,:)=TempStatus;
-                            obj.VoltageForecasts.Violation(From:To,:)=TempViolation;
                             obj.VoltageForecasts.VioDirection(From:To,:)=TempVioDir;
                             obj.VoltageForecasts.CongestionNumber(From:To,:)=0;
 
@@ -610,6 +621,7 @@ classdef PredictiveGridOptimization < handle
         function NISBusAnalysis(obj) 
             obj.State='Busy'; % The NIS structure is inspired by Power System Toolbox format. Please refer to that to know how data are organized in Bus and Branch matrixes.  
             obj.NumberofBuses=numel(obj.InboundMessage.BusName);
+            %NumBuses=obj.NumberofBuses
             obj.ExpectedNumberOfVoltageForecasts=(obj.NumberofBuses)*3;
             NumberofBusColumn=14;
             obj.NIS.BusUnits=cell(obj.NumberofBuses,NumberofBusColumn); 
@@ -624,6 +636,7 @@ classdef PredictiveGridOptimization < handle
                 obj.InboundMessage.BusVoltageBase.Values([1 RootBusRow],1)=obj.InboundMessage.BusVoltageBase.Values([RootBusRow 1],1);
             end
             obj.NIS.OriginalBusNames=cellstr(obj.InboundMessage.BusName);
+            BusNames=obj.NIS.OriginalBusNames;
             obj.NIS.Bus(:,1)=(1:length(obj.InboundMessage.BusName));
             
             %%%%% Bus Type
@@ -678,7 +691,7 @@ classdef PredictiveGridOptimization < handle
                end
                 obj.NIS.Sbase.Value=obj.InboundMessage.PowerBase.Value;
                 obj.NIS.Sbase.UnitofMeasure=obj.InboundMessage.PowerBase.UnitOfMeasure;
-                NumberofBranches=length(obj.InboundMessage.SendingEndBus);
+                NumberofBranches=length(obj.InboundMessage.SendingEndBus)
                 if NumberofBranches~=obj.NumberofBuses-1
                    disp("The distribution network is not radial") 
                 end
@@ -690,8 +703,8 @@ classdef PredictiveGridOptimization < handle
                 obj.NIS.OriginalNameofSendingEndBus=cell(NumberofBranches,1);
                 obj.NIS.OriginalNameofReceivingEndBus=cell(NumberofBranches,1);
     
-                SourceBusName=obj.NIS.OriginalBusNames(1);
-                RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName));
+                SourceBusName=obj.NIS.OriginalBusNames(1)
+                RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName))
                 if RootBusRow>1 % Assuring that the first line of the NIS.NetworkComponenetInfo starts with root bus (the change is needed because sensitivity analysis assumes that the first row contains the root bus)
                     obj.InboundMessage.DeviceId([1 RootBusRow],1)=obj.InboundMessage.DeviceId([RootBusRow 1],1);
                     obj.InboundMessage.SendingEndBus([1 RootBusRow],1)=obj.InboundMessage.SendingEndBus([RootBusRow 1],1);
@@ -777,16 +790,32 @@ classdef PredictiveGridOptimization < handle
                 if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
                     if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
                         for i=1:1:NumberofBranches % Sbase="kV.A", Vbase="kV"
-                            Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10)));  % Ibase(A)=Sbase/sqrt(3)*BusVoltageBase
+                            SendingEndBusName=obj.InboundMessage.SendingEndBus(i);
+                            BusNumber=find(strcmp(obj.NIS.OriginalBusNames,SendingEndBusName));
+                            obj.Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(BusNumber,10)));  % Ibase(A)=Sbase/sqrt(3)*BusVoltageBase
                             obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);  % NominalCurrent(A)=Ibase(A)*RatedCurrent(p.u.)
-                            Zbase(i,1)=1000*(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1))); %Zbase=1000(BusVoltageBase(kV)/sqrt(3)*Ibase(A))
-                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3); % Branch resistance in Ohm
-                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                            obj.Zbase(i,1)=1000*(obj.NIS.Bus(BusNumber,10)/(sqrt(3)*Ibase(i,1))); %Zbase=1000(BusVoltageBase(kV)/sqrt(3)*Ibase(A))
+                            %obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3); % Branch resistance in Ohm
+                            obj.BranchResistance(i,1)=obj.NIS.Branch(i,3); % Branch resistance in p.u.                           
+                            obj.BranchReactance(i,1)=obj.NIS.Branch(i,4); % Branch reactance in p.u.
                             obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
                         end
                     end
                 end
-                clear Ibase Zbase NumberofBranches NumberOfBranchColumn    % Freeing up memory
+                format long
+                Branchresistancepu=obj.BranchResistance(:,1)
+                BranchReactance=obj.BranchReactance(:,1)
+                From=obj.NIS.OriginalNameofSendingEndBus(:,1)
+                To=obj.NIS.OriginalNameofReceivingEndBus(:,1)
+%                 Zbase=Zbase
+                
+%                BranchResistancepu=obj.NIS.Branch(:,3)
+%                 FromBus=obj.NIS.OriginalNameofSendingEndBus
+%                 ToBus=obj.NIS.OriginalNameofReceivingEndBus
+%                BranchResistanceohm=obj.BranchResistance
+                
+                
+                clear NumberofBranches NumberOfBranchColumn    % Freeing up memory
                 
                 
                 disp('Network initialization of the Branch matrix was done')
@@ -803,39 +832,36 @@ classdef PredictiveGridOptimization < handle
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 7         
                        
         function SensitivityAnalysis(obj)
-            SourceNode=obj.NIS.OriginalNameofSendingEndBus;
-            TargetNode=obj.NIS.OriginalNameofReceivingEndBus;
-            EdgeWeights=obj.BranchResistance;
-            obj.G=graph(SourceNode,TargetNode,EdgeWeights);
-            SensitivityMatrix=zeros(obj.NumberofBuses,obj.NumberofBuses);
-            plot(obj.G)
-             h=plot(obj.G)
-%              h.NodeColor = 'r';
-            obj.Distances=distances(obj.G);
-            FirstRow=obj.Distances(1,:)
-            MaxValue=max(FirstRow)
-            Proximity=MaxValue*0.6
-            Place=find(FirstRow>Proximity)
-            for i=1:length(Place)
-                BusName(i,1)=obj.NIS.OriginalBusNames(Place(i))
-                x=Place(1,i)
-                highlight(h,x,'NodeColor','r')
-                labelnode(h,x,BusName(i,1))
+            SourceNode=obj.NIS.Branch(:,1);
+            TargetNode=obj.NIS.Branch(:,2);
+            EdgeWeightsR=obj.BranchResistance;
+            EdgeWeightsX=obj.BranchReactance;
+            obj.GR=graph(SourceNode,TargetNode,EdgeWeightsR);
+            obj.GX=graph(SourceNode,TargetNode,EdgeWeightsX);
+            SensitivityMatrixR=zeros(obj.NumberofBuses,obj.NumberofBuses);
+            SensitivityMatrixX=zeros(obj.NumberofBuses,obj.NumberofBuses);
+            h=plot(obj.GR);
+            obj.DistancesR=distances(obj.GR);
+            obj.DistancesX=distances(obj.GX);
+
+            for aa=1:obj.NumberofBuses
+                BusName=obj.NIS.OriginalBusNames(aa);
+                labelnode(h,aa,BusName);
             end
             
             a=obj.NIS.Bus(1,1);
-            ShortPath=struct;
-            for i=1:1:obj.NumberofBuses
-                b=obj.NIS.Bus(i,1);
-                ShortPath(i).BusNumbers=shortestpath(obj.G,a,b);
+            ShortPathR=struct;
+            for aa=1:1:obj.NumberofBuses
+                b=obj.NIS.Bus(aa,1);
+                ShortPathR(aa).BusNumbers=shortestpath(obj.GR,a,b);
             end
             % For Non-diagonal elements
-            for i=1:1:obj.NumberofBuses
+            for aa=1:1:obj.NumberofBuses
                 for j=1:1:obj.NumberofBuses
-                    if j>i
-                        CommonImpedance=0;
-                        bb=ShortPath(i).BusNumbers;
-                        cc=ShortPath(j).BusNumbers;
+                    if j>aa
+                        CommonResistance=0;
+                        bb=ShortPathR(aa).BusNumbers;
+                        cc=ShortPathR(j).BusNumbers;
                         n=length(cc);
                         Counter=0;
                         for k=1:1:n
@@ -846,29 +872,50 @@ classdef PredictiveGridOptimization < handle
                             end
                         end
                         if Counter==0
-                            CommonImpedance=0;
+                            CommonResistance=0;
                         else
                             c=length(CommonNodes);
-                            Dist=zeros(c,1);
+                            DistR=zeros(c,1);
+                            DistX=zeros(c,1);
                             for w=1:1:c
-                                Dist(w,1)=obj.Distances(a,CommonNodes(w));
+                                DistR(w,1)=obj.DistancesR(a,CommonNodes(w));
+                                DistX(w,1)=obj.DistancesX(a,CommonNodes(w));
                             end
-                            CommonImpedance=max(Dist);
+                            CommonResistance=max(DistR);
+                            CommonReactance=max(DistX);
                         end
-                    SensitivityMatrix(i,j)=CommonImpedance; 
-                    clear CommonNodes CommonImpedance Dist
+                    SensitivityMatrixR(aa,j)=CommonResistance;
+                    SensitivityMatrixX(aa,j)=CommonReactance*i;
+                    clear CommonNodes CommonResistance CommonReactance DistR DistX
                     end
                 end
             end
-            Trans=transpose(SensitivityMatrix);
+            TransR=transpose(SensitivityMatrixR);
+            TransX=transpose(SensitivityMatrixX);
+            
             % For diagonal elements
-            for i=1:1:obj.NumberofBuses
-                b=obj.NIS.Bus(i,1);
-                s=obj.Distances(a,b);
-                SensitivityMatrix(i,i)=s;
+            for yy=1:1:obj.NumberofBuses
+                b=obj.NIS.Bus(yy,1);
+                r=obj.DistancesR(a,b);
+                SensitivityMatrixR(yy,yy)=r;
+                x=obj.DistancesX(a,b);
+                SensitivityMatrixX(yy,yy)=x*i;
             end
-            SensitivityMatrix=SensitivityMatrix+Trans;
-            obj.SensitivityMatrix=SensitivityMatrix;
+            SensitivityMatrixR=SensitivityMatrixR+TransR;
+            SensitivityMatrixX=SensitivityMatrixX+TransX;
+            obj.SensitivityMatrixR=SensitivityMatrixR;
+            obj.SensitivityMatrixX=SensitivityMatrixX;
+            for www=1:1:obj.NumberofBuses
+                Rth(www,1)=SensitivityMatrixR(www,www);
+                Xth(www,1)=SensitivityMatrixX(www,www);
+                Zth=abs(Rth(www,1)+Xth(www,1));
+                ZthTotal(www,1)= Zth;
+            end
+            Rth=Rth
+            Xth=Xth
+            ZthTotal=ZthTotal
+            obj.SensitivityMatrixZ=ZthTotal;
+            
             disp('sensitivity analysis was done')
             disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
             obj.State='Free';
@@ -882,6 +929,8 @@ classdef PredictiveGridOptimization < handle
             obj.CIS.ResourceId=obj.InboundMessage.ResourceId;
             obj.CIS.CustomerId=obj.InboundMessage.CustomerId;
             obj.CIS.BusName=obj.InboundMessage.BusName;
+            NumBusNames=length(obj.CIS.BusName)
+            
 
             disp('Initialization of the Customer Information system was done')
             disp(['SimulationId:' obj.SimulationId])
@@ -896,13 +945,13 @@ classdef PredictiveGridOptimization < handle
             % making the structure of the Voltage and current forecasts with random values
             obj.VoltageForecasts=table;
             obj.VoltageForecasts.Time=["2020-06-25T00:00:00Z";"2020-06-25T06:00:00Z";"2020-06-25T06:10:00Z"]; % the values here are just an example to fill the table
+            obj.VoltageForecasts.Voltage=[126;128;129];
+            obj.VoltageForecasts.Violation=[-0.1;0.05;00.03];
             obj.VoltageForecasts.BusNumber(:,:)=3;
             obj.VoltageForecasts.BusName(:,:)="sourcebus";
             obj.VoltageForecasts.Node=[1;2;3];
-            obj.VoltageForecasts.Voltage=[126;128;129];
             obj.VoltageForecasts.Angle(:,:)=13;
             obj.VoltageForecasts.Status(:,:)="unacceptable";
-            obj.VoltageForecasts.Violation=[-0.1;0.05;00.03];
             obj.VoltageForecasts.VioDirection(:,:)=["under";"over";""];
             obj.VoltageForecasts.CongestionNumber(:,:)=0;
                 
@@ -992,48 +1041,171 @@ classdef PredictiveGridOptimization < handle
                First1=First;
            end
             
-            %%%%% 1- RealPowerMin,RealPowerRequest
+           %Temporary=obj.VoltageForecasts
+            %%%%% numbering of the violations based on Time + VioDirection+ Congestion zone
             
-            CNumber=max(obj.VoltageForecasts.CongestionNumber); 
-            for i=1:1:CNumber  % processing each congestion number, one by one
-               Rows=find(obj.VoltageForecasts.CongestionNumber==i);
+            CNumber=max(obj.VoltageForecasts.CongestionNumber);
+            Counter=0;
+            i=1;
+            if obj.RS>0.9
+                MinCongestionZone=0.1 % This is needed to avoid having too many zongestion areas
+            else
+                MinCongestionZone=0
+            end
+            while i<=CNumber
+                if Counter>0
+                    Counter=Counter-1;
+                else
+                   Counter=0;
+                   Rows=find(obj.VoltageForecasts.CongestionNumber==i);
+                   for k=1:length(Rows)
+                       Congestion(k,:)=obj.VoltageForecasts(Rows(k),:);
+                   end
+                   Congestion=sortrows(Congestion);
+                   CongestionLength=length(Congestion.CongestionNumber);
+                   Change="False";
+
+                   BusNumber=Congestion.BusNumber(1);
+                   BasicCongestionNum=Congestion.CongestionNumber(1);
+                   RS=zeros(obj.NumberofBuses,1);
+                   for k=1:1:obj.NumberofBuses   % relative sensitivity calculation needed for determining the size of network suitable for flexibility need
+                       RS(k,1)=obj.SensitivityMatrixR(k,BusNumber)/obj.SensitivityMatrixR(BusNumber,BusNumber);
+                   end
+
+                   for k=1:1:obj.NumberofBuses  % Determining buses that has impact on congestion area
+                       if RS(k,1)<(obj.RS-MinCongestionZone)
+                           RS(k,1)=0; % outside the congestion zone
+                       else
+                           RS(k,1)=1; % inside the congestion zone
+                       end
+                   end
+
+                   InsideZoneIndexes=find(RS>0);
+                   for kk=1:1:CongestionLength
+                      Row=find(InsideZoneIndexes==Congestion.BusNumber(kk));
+                      if isempty(Row)
+                          Congestion.CongestionNumber(kk)=Congestion.CongestionNumber(kk)+1;
+                          Change="True"; 
+                      end
+                   end
+                   %%% Second round
+                   if strcmp(Change,"True")
+                      while strcmp(Change,"True")
+                        Change="False";
+                        Counter=Counter+1;
+                        BasicCongestionNum=BasicCongestionNum+1;
+                        Row=find(Congestion.CongestionNumber==BasicCongestionNum);
+                        BusNumber=Congestion.BusNumber(Row(1));
+                        RS=zeros(obj.NumberofBuses,1);
+                        for k=1:1:obj.NumberofBuses   % relative sensitivity calculation needed for determining the size of network suitable for flexibility need
+                            RS(k,1)=obj.SensitivityMatrixR(k,BusNumber)/obj.SensitivityMatrixR(BusNumber,BusNumber);
+                        end
+                        for k=1:1:obj.NumberofBuses  % Determining buses that has impact on congestion area
+                           if RS(k,1)<(obj.RS-MinCongestionZone)
+                               RS(k,1)=0; % outside the congestion zone
+                           else
+                               RS(k,1)=1; % inside the congestion zone
+                           end
+                        end
+                        InsideZoneIndexes=find(RS>0);
+                        for kk=1:1:length(Row)
+                          ss=find(InsideZoneIndexes==Congestion.BusNumber(Row(kk)), 1);
+                          if isempty(ss)
+                              Congestion.CongestionNumber(Row(kk))=Congestion.CongestionNumber(Row(kk))+1;
+                              Change="True"; 
+                          end
+                        end
+                      end
+                   end
+                   CNumber=CNumber+Counter; 
+                   for k=1:length(Rows)
+                     obj.VoltageForecasts(Rows(k),:)=Congestion(k,:);
+                   end
+                   %Temporary=obj.VoltageForecasts;
+                   %lengthofcongesiton=length(obj.VoltageForecasts.CongestionNumber);
+                   %Rows=Rows
+                   for w=1:1:length(obj.VoltageForecasts.CongestionNumber)
+                       exist=find(w==Rows, 1);
+                       if isempty(exist)
+                           if w>max(Rows)
+                               obj.VoltageForecasts.CongestionNumber(w)=obj.VoltageForecasts.CongestionNumber(w)+Counter;
+                           end
+                       end
+                   end
+                end
+                i=i+1;
+                clear Congestion Rows Temporary
+            end 
+            
+           disp("Numbering was completed")
+           Temporary=obj.VoltageForecasts
+           CNumber=max(obj.VoltageForecasts.CongestionNumber) 
+           for i=1:1:CNumber   % processing each congestion number, one by one
+                Rows=find(obj.VoltageForecasts.CongestionNumber==i);
                for k=1:length(Rows)
                    Congestion(k,:)=obj.VoltageForecasts(Rows(k),:);
                end
                Congestion=sortrows(Congestion);
-               
                % Finding BusName and its number (heart of the congestion)
                
                if (Congestion.VioDirection(1)=="over")  % since the table is already sorted by time and violation values, for over voltage situations, the last row has the highest violation magnitude
-                   VoltageViolation=Congestion.Violation(end);
-                   BusName=Congestion.BusName(end);
-                   BusNumber=Congestion.BusNumber(end);
+                   VoltageViolation=Congestion.Violation(end)
+                   BusName=Congestion.BusName(end)
+                   BusNumber=Congestion.BusNumber(end)
                else
-                   VoltageViolation=Congestion.Violation(1); % since the table is already sorted by time and violation values, for over voltage situations, the first row has the lowest violation magnitude
-                   BusName=Congestion.BusName(1);
-                   BusNumber=Congestion.BusNumber(1);
+                   VoltageViolation=Congestion.Violation(1) % since the table is already sorted by time and violation values, for over voltage situations, the first row has the lowest violation magnitude
+                   BusName=Congestion.BusName(1)
+                   BusNumber=Congestion.BusNumber(1)
                end
-
+               
+               
                % Finding RealPowerMin and RealPowerRequest
                
                Row = find(strcmp(string(obj.NIS.OriginalBusNames(:,1)),BusName)); % finding the Row of the Bus
-               NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
-               VoltageViolation=1000*VoltageViolation*NominalVoltage; % Voltage violation per volt
-               R=obj.SensitivityMatrix(BusNumber,:); % Relative sensitivity value corresponding to the BusNumber
-               DeltaV=zeros(1,length(R));
-               DeltaV(1,:)=VoltageViolation;  % per volt
-               DeltaI=zeros(1,length(DeltaV));
-               DeltaI(1,:)=DeltaV(1,:)./R(1,:); % per Amp
-               DeltaI(1,1)=0.002;   % Using a small value (0.002) to avoid inf because the first value of DeltaI is always inf (root bus)
+               NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3)  % kV
+%                VoltageViolation=1000*VoltageViolation*NominalVoltage; % Voltage violation per volt
                
-               PowerNeed=zeros(1,length(DeltaV));
-               VoltageBase(:,1)=obj.NIS.Bus(:,10); % kV
-               PowerNeed(:,:)=1000*sqrt(3).*(VoltageBase'.*DeltaI(1,:)); % Power need per W (Although the flex need should be calculated in kW, but here for more accuracy W is used)
+               R=obj.SensitivityMatrixR(BusNumber,:); % Relative sensitivity value corresponding to the BusNumber
+               X=obj.SensitivityMatrixX(BusNumber,:);
+               Z=obj.SensitivityMatrixZ;
+%                Z(254,1)=0.1463
+               Z=Z.';
+%                for h=1:1:length(R)
+%                    Z(1,h)=abs(R(1,h)+X(1,h)*i)
+%                end
+
+               DeltaV=zeros(1,length(R));
+%               DeltaV(1,:)=VoltageViolation;  % per volt
+               DeltaV(1,:)=VoltageViolation  % per unit
+               DeltaI=zeros(1,length(R))
+
+               %DeltaI(1,:)=DeltaV(1,:)./Z(1,:) % per unit
+               DeltaI(1,:)=DeltaV(1,:)./R(1,:) % per unit
+               DeltaI(1,1)=0.0000002;   % Using a small value (0.002) to avoid inf because the first value of DeltaI is always inf (root bus)
+               
+%                PowerNeed=zeros(1,length(DeltaV));
+%                VoltageBase(:,1)=obj.NIS.Bus(:,10); % kV
+%                PowerNeed(:,:)=1000*sqrt(3).*(VoltageBase'.*DeltaI(1,:)); % Power need per W (Although the flex need should be calculated in kW, but here for more accuracy W is used)
+               
+               Ibase=obj.Ibase
+                
+%                Voltage=zeros(length(DeltaV),1);
+%                Voltage(:,:)=1;
+               PowerNeed=zeros(1,obj.NumberofBuses);
+               PowerNeed(:,:)=(obj.NIS.Sbase.Value)*1000*sqrt(3).*(DeltaI(1,:)) % Power Need per Watt
+               %
+               Rth=obj.SensitivityMatrixR(BusNumber,BusNumber)
+               Xth=obj.SensitivityMatrixX(BusNumber,BusNumber)
+               Iscpu=1/abs(Rth+Xth)
+               MinDeltaI=DeltaI(1,BusNumber)
+               MinIbase=Ibase(BusNumber)
+               
+               MinPowerNeed=PowerNeed(1,BusNumber)
                PowerNeed(1,1)=0;
 
                RS=zeros(obj.NumberofBuses,1);
                for k=1:1:obj.NumberofBuses   % relative sensitivity calculation needed for determining the size of network suitable for flexibility need
-                   RS(k,1)=obj.SensitivityMatrix(k,BusNumber)/obj.SensitivityMatrix(BusNumber,BusNumber);
+                   RS(k,1)=obj.SensitivityMatrixR(k,BusNumber)/obj.SensitivityMatrixR(BusNumber,BusNumber);
                end
                
                for k=1:1:obj.NumberofBuses  % Determining buses that has impact on congestion area
@@ -1043,16 +1215,28 @@ classdef PredictiveGridOptimization < handle
                        RS(k,1)=1;
                    end
                end
-               PowerNeed=abs(RS'.*PowerNeed);    % absolute is needed to avoid having negative values
+               PowerNeed=abs(RS'.*PowerNeed)    % absolute is needed to avoid having negative values
                Column=find(PowerNeed(1,:)~=0);
-               PowerNeed(PowerNeed==0)=[];
-               RealPowerMin=round(min(PowerNeed));  % related to risk policy of DSO
-               RealPowerMin=roundn(RealPowerMin,1); %round to the nearest 10
-               RealPowerRequest=round(max(PowerNeed)); % related to risk policy of DSO
-               RealPowerRequest=roundn(RealPowerRequest,1); %round to the nearest 10
+               PowerNeed(PowerNeed==0)=[]
+               [RealPowerMin,RealPowerMinIndex]=min(PowerNeed)  % related to risk policy of DSO
+               %RealPowerMinBusName=obj.NIS.OriginalBusNames(RealPowerMinIndex)
+               RealPowerMin=round(RealPowerMin)
+               RealPowerMin=roundn(RealPowerMin,1) %round to the nearest 10
+               
+               [RealPowerRequest,RealPowerRequestIndex]=max(PowerNeed) % related to risk policy of DSO
+               %RealPowerRequestBusName=obj.NIS.OriginalBusNames(RealPowerRequestIndex)
+               RealPowerRequest=round(RealPowerRequest)
+               RealPowerRequest=roundn(RealPowerRequest,1) %round to the nearest 10
                if RealPowerRequest==inf
                    RealPowerRequest=RealPowerMin;
                end
+               if RealPowerMin==0
+                   RealPowerMin=10;
+               end
+               if RealPowerRequest==0
+                   RealPowerRequest=10;
+               end
+               
                Counter=0;
                
                %%%%% 2- CustomerIds
@@ -1081,6 +1265,11 @@ classdef PredictiveGridOptimization < handle
                 end
                 obj.FlexNeed(i).RealPowerMin.Value=RealPowerMin/1000; % Divided by 1000 to make it kW
                 obj.FlexNeed(i).RealPowerMin.UnitOfMeasure="kW";
+%                 obj.FlexNeed(i).RealPower.TimeIndex=obj.FlexNeed(i).ActivationTime;  % for tanjim
+%                 obj.FlexNeed(i).RealPower.Series.Regulation.Values=RealPowerMin/1000; % for tanjim
+                obj.FlexNeed(i).RealPower.Series.Regulation.UnitOfMeasure="kW";
+                
+                obj.FlexNeed(i).RealPowerMin.UnitOfMeasure="kW";
                 obj.FlexNeed(i).RealPowerRequest.Value=RealPowerRequest/1000; % Divided by 1000 to make it kW
                 obj.FlexNeed(i).RealPowerRequest.UnitOfMeasure="kW";
                 if Counter>0
@@ -1089,16 +1278,31 @@ classdef PredictiveGridOptimization < handle
                     obj.FlexNeed(i).CustomerIds="None";   % It means there is no CustomerId inside the congestion Zone
                 end
                 obj.FlexNeed(i).MainBus=BusName;
+                obj.FlexNeed(i).VoltageViolation=VoltageViolation;
                 pause(0.01);   % to make sure that time is unique because it is used for congestion Id
                     t = datetime('now', 'TimeZone', 'UTC');
                     t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
                     s = strcat(obj.SourceProcessId,'-',t);
+%                 s=num2str(i)
                 obj.FlexNeed(i).CongestionId=s;
                 obj.FlexNeed(i).BidResolution.Value=10;
                 obj.FlexNeed(i).BidResolution.UnitOfMeasure="kW"; 
                 clear Congestion CustomerIds BusNames
-            end
+           end
             
+           % Just for testing
+%            for i=1:length(obj.FlexNeed) 
+%                 Need=obj.FlexNeed(i) % for testing purpuses
+%                 RealPowerMin=Need.RealPowerMin
+%                 RealPowerRequest=Need.RealPowerRequest
+%                 CustomerId=obj.FlexNeed(i).CustomerIds % for testing purpuses
+%                 if ~strcmp(obj.FlexNeed(i).CustomerIds,"None")
+%                    obj.CustomerIdExistanceFlag=1; 
+%                 end
+%            end
+%            SavedFlexNeed=jsonencode(obj.FlexNeed)
+           
+           
             %%%%% Deleting the CustomerIds that are common between flexibility needs with a same activation time but opposite direction using relative sensitivity calculation
             
             NumOfNeeds=length(obj.FlexNeed);
@@ -1107,17 +1311,24 @@ classdef PredictiveGridOptimization < handle
                if ~strcmp(B,obj.FlexNeed(i).ActivationTime)
                     A=obj.FlexNeed(i).ActivationTime;
                     B=A;
+                    Flag=0;
+                    SameTime=[];
                     for m=1:NumOfNeeds
                         if strcmp(A,obj.FlexNeed(m).ActivationTime)
-                            SameTime(m)=m;
+                            if ~strcmp(obj.FlexNeed(i).Direction,obj.FlexNeed(m).Direction)
+                                SameTime(m)=m;
+                                Flag=1;
+                            end
                         end
                     end
-                    SameTime(SameTime==0)=[];
-                    if length(SameTime)==1
-                        SameTime=[];           % it means there is no same activation time
+                    if Flag==1
+                        SameTime(SameTime==0)=[];
+                        if length(SameTime)==0
+                            SameTime=[];           % it means there is no same activation time
+                        end
                     end
                     if ~isempty(SameTime)
-                        rows=length(SameTime);
+                        rows=length(SameTime)
                         for k=1:1:length(rows)
                             Flag=0;
                             First=obj.FlexNeed(i).CustomerIds;
@@ -1193,29 +1404,34 @@ classdef PredictiveGridOptimization < handle
             x=str2double(x);
             for i=1:length(obj.FlexNeed) 
                 Need=obj.FlexNeed(i) % for testing purpuses
+                RealPowerMin=Need.RealPowerMin
+                RealPowerRequest=Need.RealPowerRequest
                 CustomerId=obj.FlexNeed(i).CustomerIds % for testing purpuses
                 if ~strcmp(obj.FlexNeed(i).CustomerIds,"None")
                    obj.CustomerIdExistanceFlag=1; 
                 end
             end
             
-            if x>=14 && x<15
+            SavedFlexNeed=jsonencode(obj.FlexNeed)
+            
+            
+            %if x>=14 && x<15
                 disp('flex need calculation was done and ready to be forwarded')
                 obj.FlexNeedTimeFlag=1;
                 if obj.CustomerIdExistanceFlag==1  
                     FlexibilityNeedForwarding(obj);   %  forwarding the flex needs to LFM
                 end
-            else
-                disp('Although flex need calculation is done, it is not the right time for requesting')
-                obj.StatusReadiness;
-            end
+            %else
+              %  disp('Although flex need calculation is done, it is not the right time for requesting')
+             %   obj.StatusReadiness;
+            %end
        end
        
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 11          
        
         function FlexibilityNeedForwarding(obj)
             for i=1:length(obj.FlexNeed)
-                CustomerIdNonExistance=find(strcmp(obj.FlexNeed(i).CustomerIds,"None"),1)  % To avoid sending flexibility need when there is no CustomerId inside congestion area
+                CustomerIdNonExistance=find(strcmp(obj.FlexNeed(i).CustomerIds,"None"),1);  % To avoid sending flexibility need when there is no CustomerId inside congestion area
                 if isempty(CustomerIdNonExistance) 
                     AbstractResult.Type='FlexibilityNeed';
                     AbstractResult.SimulationId=obj.SimulationId;
@@ -1257,7 +1473,7 @@ classdef PredictiveGridOptimization < handle
             x=string(x);
             x=str2double(x);
             Offer=[];
-            if x>=14 || x<17   % LFM market is open for 3 hours
+            %if x>=14 || x<17   % LFM market is open for 3 hours
                 if obj.OfferCounter==0
                     existance=[]; % existance is set empty
                 else
@@ -1296,9 +1512,9 @@ classdef PredictiveGridOptimization < handle
                             ExpectedNumCustomerIds=length(ExpectedCustomerIds)   % It contains the min number of CustomerIds
                             for m=1:1:length(Row)    % if OfferCount>1, then more CustomerIds should be received
                                 OfferCount=obj.Offer(Row(m)).OfferCount
-                                CustomerIds=obj.Offer(Row(m)).CustomerIds
-                                CustomerIdsNum=length(CustomerIds)
                                 if OfferCount>1
+                                    CustomerIds=obj.Offer(Row(m)).CustomerIds
+                                    CustomerIdsNum=length(CustomerIds)
                                     ExpectedNumCustomerIds=(OfferCount-1)*CustomerIdsNum+ExpectedNumCustomerIds;
                                 end
                             end
@@ -1332,7 +1548,7 @@ classdef PredictiveGridOptimization < handle
                         end
                     end
                 end
-            end
+            %end
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 13
@@ -1358,7 +1574,7 @@ classdef PredictiveGridOptimization < handle
                                 break;
                             else
                                 obj.FlexNeed(i).OfferId(m)=Offer(m).OfferId;
-                                OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
+                            %   OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
                                 obj.OfferSelectedFlag=1;
                             end
                        end
@@ -1511,7 +1727,7 @@ classdef PredictiveGridOptimization < handle
         function StatusReadiness(obj) 
            ReadyFlag=0;
            %%%
-           if obj.GridReadinessFlag==1
+           %if obj.GridReadinessFlag==1
                 if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
                     if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                         if obj.FlexNeedFlag==0 % No flex need
@@ -1520,65 +1736,50 @@ classdef PredictiveGridOptimization < handle
                         end
                     end
                 end
-           end
+           %end
            %%%
-           if obj.GridReadinessFlag==1 
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==1 % flex need exist
-                            if obj.FlexNeedTimeFlag==0 % time for bidding has not occured yet
-                                AbstractResult.Value='ready'; 
-                                ReadyFlag=1;
-                            end
-                        end
-                    end
-                end
-           end
-           %%%
-           if obj.GridReadinessFlag==1 
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==1 % flex need exist
-                            if obj.FlexNeedTimeFlag==1 % time for bidding has occured
-                                if obj.CustomerIdExistanceFlag==0 % there is no CustomerId within the congestion area
+           if ReadyFlag==0
+           %    if obj.GridReadinessFlag==1 
+                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            if obj.FlexNeedFlag==1 % flex need exist
+                                if obj.FlexNeedTimeFlag==0 % time for bidding has not occured yet
                                     AbstractResult.Value='ready'; 
                                     ReadyFlag=1;
                                 end
                             end
                         end
                     end
-                end
+           %    end
            end
-           %%% 
-           if obj.GridReadinessFlag==1 
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==1 % Flex need exist
-                            if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
-                                if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                    if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                        if obj.OfferReceivedFlag==0 % required number of offers have not arrived yet
-                                            ReadyFlag=0; % keep listening
-                                        end
+           %%%
+           if ReadyFlag==0
+               %if obj.GridReadinessFlag==1 
+                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            if obj.FlexNeedFlag==1 % flex need exist
+                                if obj.FlexNeedTimeFlag==1 % time for bidding has occured
+                                    if obj.CustomerIdExistanceFlag==0 % there is no CustomerId within the congestion area
+                                        AbstractResult.Value='ready'; 
+                                        ReadyFlag=1;
                                     end
                                 end
                             end
                         end
                     end
-                end
+               %end
            end
-           %%% 
-           if obj.GridReadinessFlag==1 
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==1 %Flex need exits 
-                            if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
-                                if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                    if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                        if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                                            if obj.OfferSelectionTimeFlag==0 % Time for offer selection has not occured
-                                                AbstractResult.Value='ready';
-                                                ReadyFlag=1;
+           %%%
+           if ReadyFlag==0
+               %if obj.GridReadinessFlag==1 
+                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            if obj.FlexNeedFlag==1 % Flex need exist
+                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
+                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
+                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                                            if obj.OfferReceivedFlag==0 % required number of offers have not arrived yet
+                                                ReadyFlag=0; % keep listening
                                             end
                                         end
                                     end
@@ -1586,45 +1787,72 @@ classdef PredictiveGridOptimization < handle
                             end
                         end
                     end
-                end
+               %end
            end
-           %%%
-           if obj.GridReadinessFlag==1
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==1 %Flex need exits 
-                            if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
-                                if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                    if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                        if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                                           if  obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
-                                                if obj.OfferSelectedFlag==0 % no offer has been selected
+           %%% 
+           if ReadyFlag==0
+               %if obj.GridReadinessFlag==1 
+                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            if obj.FlexNeedFlag==1 %Flex need exits 
+                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
+                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
+                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                                            if obj.OfferReceivedFlag==1 % required number of offers have arrived
+                                                if obj.OfferSelectionTimeFlag==0 % Time for offer selection has not occured
                                                     AbstractResult.Value='ready';
                                                     ReadyFlag=1;
                                                 end
-                                           end     
-                                       end
+                                            end
+                                        end
                                     end
                                 end
                             end
                         end
                     end
-                end
+               %end
            end
            %%%
-           if obj.GridReadinessFlag==1
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==1 %Flex need exits 
-                            if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
-                                if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                    if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                        if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                                            if obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
-                                                if obj.OfferSelectedFlag==1 % offer selection has been done
-                                                    if obj.SlectedOfferForwardedFlag==1 % LFM is informed about the selected offers
+           if ReadyFlag==0
+               %if obj.GridReadinessFlag==1
+                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            if obj.FlexNeedFlag==1 %Flex need exits 
+                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
+                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
+                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                                            if obj.OfferReceivedFlag==1 % required number of offers have arrived
+                                               if  obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
+                                                    if obj.OfferSelectedFlag==0 % no offer has been selected
                                                         AbstractResult.Value='ready';
                                                         ReadyFlag=1;
+                                                    end
+                                               end     
+                                           end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+               %end
+           end
+           %%%
+           if ReadyFlag==0
+               %if obj.GridReadinessFlag==1
+                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            if obj.FlexNeedFlag==1 %Flex need exits 
+                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
+                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
+                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                                            if obj.OfferReceivedFlag==1 % required number of offers have arrived
+                                                if obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
+                                                    if obj.OfferSelectedFlag==1 % offer selection has been done
+                                                        if obj.SlectedOfferForwardedFlag==1 % LFM is informed about the selected offers
+                                                            AbstractResult.Value='ready';
+                                                            ReadyFlag=1;
+                                                        end
                                                     end
                                                 end
                                             end
@@ -1634,7 +1862,7 @@ classdef PredictiveGridOptimization < handle
                             end
                         end
                     end
-                end
+               %end
            end
            %%%
            if ReadyFlag==1
