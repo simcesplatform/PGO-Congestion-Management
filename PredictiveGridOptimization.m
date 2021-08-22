@@ -76,7 +76,9 @@ classdef PredictiveGridOptimization < handle
         SlectedOfferForwardedFlag 
         FlexNeedTimeFlag
         OfferSelectionTimeFlag
-        CustomerIdExistanceFlag 
+        CustomerIdExistanceFlag
+        ReceivedAllVoltageForecastsFlag
+        ReceivedAllCurrentForecastsFlag
         
         % connector to simulation specific exchange (using ProcemPlus lib)
         AmqpConnector  
@@ -123,6 +125,8 @@ classdef PredictiveGridOptimization < handle
             obj.OfferSelectionTimeFlag=0; % Flag is 1 once the time for selecting the offer is occured
             obj.OfferSelectedFlag=0;  % Flag is 1 once a flex Offer has been selected for congestion management
             obj.SlectedOfferForwardedFlag=0;  % Flag is 1 once an offer is selcted and LFM is informed about that
+            obj.ReceivedAllVoltageForecastsFlag=0;
+            obj.ReceivedAllCurrentForecastsFlag=0;
 
             obj.State='Free';   % The object's default State is 'Free'
         end
@@ -133,6 +137,7 @@ classdef PredictiveGridOptimization < handle
             obj.State=NewState;
             disp('%%%%%%%%%')
             disp(['SimulationId:' obj.SimulationId])
+            disp(['Epoch:' num2str(obj.Epoch)])
             disp(['State:' obj.State])
             disp('%%%%%%%%%')
             if strcmp(obj.State,'Free') 
@@ -155,14 +160,14 @@ classdef PredictiveGridOptimization < handle
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 3
         
         function Subscription(obj)
-            AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('localhost',obj.SimulationSpecificExchange,'guest','guest'); % Based on what is specified in the Start message, PGO listens to that exchange.
-%            AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('amqp.ain.rd.tut.fi',obj.SimulationSpecificExchange,'procem-all','simu09LATION');
+%             AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('localhost',obj.SimulationSpecificExchange,'guest','guest'); % Based on what is specified in the Start message, PGO listens to that exchange.
+            AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('amqp.ain.rd.tut.fi',obj.SimulationSpecificExchange,'procem-all','simu09LATION');
             AmqpProps.setSecure(true);
-            AmqpProps.setSecure(false);
-            AmqpProps.setPort(5672);   % Default AMQP port
-%            AmqpProps.setPort(45671);   % Default AMQP port
-%             AmqpProps.setExchangeDurable(false);    % Uncomment this line if settings in the AMQP broker is activated
-%             AmqpProps.setExchangeAutoDelete(true);  % Uncomment this line if settings in the AMQP broker is activated
+           % AmqpProps.setSecure(false);
+           % AmqpProps.setPort(5672);   % Default AMQP port
+            AmqpProps.setPort(45671);   % Default AMQP port
+            AmqpProps.setExchangeDurable(false);    % Uncomment this line if settings in the AMQP broker is activated
+            AmqpProps.setExchangeAutoDelete(true);  % Uncomment this line if settings in the AMQP broker is activated
             
             topicsIn = javaArray('java.lang.String',9); % PGO needs to at least listen to 8 different topics as mentioned below
             topicsIn(1) = java.lang.String('SimState'); % PGO needs to SimState topic published by Simulation Manager
@@ -206,7 +211,7 @@ classdef PredictiveGridOptimization < handle
                        if strcmp(obj.InboundMessage.Type,'SimState')
                             if strcmp(obj.InboundMessage.SimulationState,'running')
                                 AbstractResult.Type='Status';
-                                AbstractResult.SimulationId=obj.SimulationId;
+                                AbstractResult.SimulationId=obj.SimulationId{1};
                                 AbstractResult.SourceProcessId=obj.SourceProcessId;
                                 obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                                     s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound)); % Making the number of outbound messages string to create MessageId
@@ -298,7 +303,9 @@ classdef PredictiveGridOptimization < handle
                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's voltage forecasts
                         
                        if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Voltage')
+                           disp('Voltage forecast state is coming')
                            VoltageViolationFlag=0;
+                           obj.ReceivedAllVoltageForecastsFlag=0;
                            obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
                            A=length(obj.InboundMessage.Forecast.TimeIndex);
                            if obj.ForecastLengthVoltage>0 % Since the ForecastLengthVoltage is 0 in the beggining of the Epoch, this condition only applies from second voltage value till the last
@@ -321,7 +328,7 @@ classdef PredictiveGridOptimization < handle
                            Vmax1=(obj.MaxVoltage-obj.UpperAmberBandVoltage)*NominalVoltage; % kV
                            Vmin2=obj.MinVoltage*NominalVoltage;  % kV
                            Vmax2=obj.MaxVoltage*NominalVoltage; % kV
-                           Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values;
+                           %Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values
                            
                            %%%%% Voltage level analysis
                            for i=1:obj.ForecastLengthVoltage
@@ -379,6 +386,7 @@ classdef PredictiveGridOptimization < handle
                             
                             obj.ExpectedNumberOfVoltageForecasts=obj.NumberofBuses*3*obj.ForecastLengthVoltage;  % Bus*Node*length of time series. change the Node value if the network is not three phase
                             if length(obj.VoltageForecasts.Time)==obj.ExpectedNumberOfVoltageForecasts
+                                obj.ReceivedAllVoltageForecastsFlag=1;
                                 RowWithVio=find(obj.VoltageForecasts.Violation~=0);
                                 if ~isempty(RowWithVio)
                                     n=length(RowWithVio);
@@ -421,15 +429,16 @@ classdef PredictiveGridOptimization < handle
 %                                     end
 %                                 end
                                 end
-                                if isempty(RowWithVio)
-                                    obj.FlexNeedFlag=0;    % since no congestion exist, flex need is not required at all :)
-                                    disp('Flex is not needed')
-                                    obj.StatusReadiness;
-                                else
-                                    disp('Flex is needed')
+                                if ~isempty(n)
                                     obj.FlexNeedFlag=1;
-                                    obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
-                                    obj.FlexibilityNeed;
+                                    disp('Flex is needed- voltage')
+                                  if  obj.ReceivedAllCurrentForecastsFlag==1 
+                                        disp('Flex is needed- voltage')
+                                        obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
+                                        obj.FlexibilityNeed;
+                                  end
+                                else
+                                  obj.StatusReadiness;
                                 end
                             end
                         end
@@ -439,9 +448,11 @@ classdef PredictiveGridOptimization < handle
                        
                        if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Current')
                            obj.NumberOfReceivedCurrentValues=obj.NumberOfReceivedCurrentValues+1;
-
+                           disp('Current forecast state is coming')
+                           obj.ReceivedAllCurrentForecastsFlag=0;
+                           
                            obj.ForecastLengthCurrent=length(obj.InboundMessage.Forecast.TimeIndex);
-                           if obj.ForecastLengthCurrent==obj.ForecastLengthVoltage
+                           if obj.ForecastLengthCurrent~=obj.ForecastLengthVoltage
                                disp('The length of forecasted current is not equal to the length of the forecasted voltage')
                            end
                            From=1+(obj.ForecastLengthCurrent*(obj.NumberOfReceivedCurrentValues-1));
@@ -451,12 +462,13 @@ classdef PredictiveGridOptimization < handle
                            TempViolationSendingEnd=string(zeros(obj.ForecastLengthCurrent,1));
                            TempViolationReceivingEnd=string(zeros(obj.ForecastLengthCurrent,1));
 
-                           Row = find(strcmp(string(obj.NIS.DeviceId(:,1)),string(obj.InboundMessage.DeviceId)));
+                           Row = find(strcmp(string(obj.NIS.DeviceId(:,1)),string(obj.InboundMessage.DeviceId)))
+                           disp(['DeviceId:' string(obj.InboundMessage.DeviceId)])
                            NominalCurrent=obj.NominalCurrent(Row,1);
                            Imax1=NominalCurrent*obj.AmberLoadingBaseline;
                            Imax2=NominalCurrent*obj.OverloadingBaseline;
 
-
+                           
                                 %%%%% Current level analysis
                            for i=1:obj.ForecastLengthCurrent
                                if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)>Imax1)
@@ -496,12 +508,12 @@ classdef PredictiveGridOptimization < handle
 
                             end
                             obj.CurrentForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
-                            obj.CurrentForecasts.DeviceId(From:To,:)=obj.InboundMessage.Forecast.DeviceId;
-                            obj.CurrentForecasts.Phase(From:To,:)=obj.InboundMessage.Forecast.Phase;
-                            obj.CurrentForecasts.MangnitudeSendingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.MangnitudeSendingEnd.Values;
-                            obj.CurrentForecasts.MangnitudeReceivingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.MangnitudeReceivingEnd.Values;
-                            obj.CurrentForecasts.AngleSendingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.AngleSendingEnd.Values;
-                            obj.CurrentForecasts.AngleReceivingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.AngleReceivingEnd.Values;
+                            obj.CurrentForecasts.DeviceId(From:To,:)=obj.InboundMessage.DeviceId;
+                            obj.CurrentForecasts.Phase(From:To,:)=obj.InboundMessage.Phase;
+%                             obj.CurrentForecasts.MangnitudeSendingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.MangnitudeSendingEnd.Values;
+%                             obj.CurrentForecasts.MangnitudeReceivingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.MangnitudeReceivingEnd.Values;
+%                             obj.CurrentForecasts.AngleSendingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.AngleSendingEnd.Values;
+%                             obj.CurrentForecasts.AngleReceivingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.AngleReceivingEnd.Values;
                             obj.CurrentForecasts.StatusSendingEnd(From:To,:)=TempStatusSendingEnd;
                             obj.CurrentForecasts.ViolationSendingEnd(From:To,:)=TempViolationSendingEnd;
                             obj.CurrentForecasts.StatusReceivingEnd(From:To,:)=TempStatusReceivingEnd;
@@ -510,6 +522,7 @@ classdef PredictiveGridOptimization < handle
                             % Deleting the rows without violation
                             
                             if length(obj.CurrentForecasts.Time)==(obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent)
+                                obj.ReceivedAllCurrentForecastsFlag=1;
                                 RowWithoutVioSending=find(obj.CurrentForecasts.ViolationSendingEnd==0);
                                 RowWithoutVioReceiving=find(obj.CurrentForecasts.ViolationReceivingEnd==0);
                                 
@@ -545,23 +558,37 @@ classdef PredictiveGridOptimization < handle
                                 NextDayEnd=dateshift(NextDayStart,'start','day','next');
                                 
                                 n=length(obj.CurrentForecasts.Time);   % It gives the number of violations
-                                if ~isempty(n)
-                                    for i=1:1:n
-                                        x=obj.CurrentForecasts.Time(i);
-                                        type=class(x);
-                                        if strcmp(type,"string")
-                                            x=char(x);
-                                        end
-                                        x=x(1:10);
-                                        x=datetime(x,'InputFormat','yyyy-MM-dd');
-                                        if x<=NextDayEnd
-                                            obj.CurrentForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
-                                        end
-                                        if x>=NextDayStart
-                                            obj.CurrentForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
-                                        end
+%                                 if ~isempty(n)
+%                                     for i=1:1:n
+%                                         x=obj.CurrentForecasts.Time(i);
+%                                         type=class(x);
+%                                         if strcmp(type,"string")
+%                                             x=char(x);
+%                                         end
+%                                         x=x(1:10);
+%                                         x=datetime(x,'InputFormat','yyyy-MM-dd');
+%                                         if x<=NextDayEnd
+%                                             obj.CurrentForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
+%                                         end
+%                                         if x>=NextDayStart
+%                                             obj.CurrentForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
+%                                         end
+%                                     end
+%                                 end
+                                if  obj.ReceivedAllVoltageForecastsFlag==1
+                                    if obj.FlexNeedFlag==1
+%                                         if isempty(n)
+%                                             obj.FlexNeedFlag=0;    % since no congestion exist, flex need is not required at all :)
+%                                             disp('Flex is not needed- current')
+%                                             obj.StatusReadiness;
+%                                         else
+                                            disp('Flex is needed- current')
+                                            obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
+                                            obj.FlexibilityNeed;
+%                                         end
                                     end
                                 end
+                                
                                 
 %                                 if isempty(obj.CurrentForecasts)
 %                                     obj.FlexNeedFlag=0;    % since no congestion exist, flex need is not required at all :)
@@ -586,7 +613,7 @@ classdef PredictiveGridOptimization < handle
                         obj.State='Free';
                         disp("Heloo")
                         AbstractResult.Type='FlexibilityNeed';
-                        AbstractResult.SimulationId=obj.SimulationId;
+                        AbstractResult.SimulationId=obj.SimulationId{1};
                         AbstractResult.SourceProcessId=obj.SourceProcessId;
                         obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                             s = strcat('StateMonitoring',num2str(obj.MessageCounterOutbound));
@@ -703,7 +730,7 @@ classdef PredictiveGridOptimization < handle
                 obj.NIS.OriginalNameofSendingEndBus=cell(NumberofBranches,1);
                 obj.NIS.OriginalNameofReceivingEndBus=cell(NumberofBranches,1);
     
-                SourceBusName=obj.NIS.OriginalBusNames(1)
+                SourceBusName=obj.NIS.OriginalBusNames(1);
                 RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName))
                 if RootBusRow>1 % Assuring that the first line of the NIS.NetworkComponenetInfo starts with root bus (the change is needed because sensitivity analysis assumes that the first row contains the root bus)
                     obj.InboundMessage.DeviceId([1 RootBusRow],1)=obj.InboundMessage.DeviceId([RootBusRow 1],1);
@@ -803,10 +830,10 @@ classdef PredictiveGridOptimization < handle
                     end
                 end
                 format long
-                Branchresistancepu=obj.BranchResistance(:,1)
-                BranchReactance=obj.BranchReactance(:,1)
-                From=obj.NIS.OriginalNameofSendingEndBus(:,1)
-                To=obj.NIS.OriginalNameofReceivingEndBus(:,1)
+                Branchresistancepu=obj.BranchResistance(:,1);
+                BranchReactance=obj.BranchReactance(:,1);
+                From=obj.NIS.OriginalNameofSendingEndBus(:,1);
+                To=obj.NIS.OriginalNameofReceivingEndBus(:,1);
 %                 Zbase=Zbase
                 
 %                BranchResistancepu=obj.NIS.Branch(:,3)
@@ -840,14 +867,14 @@ classdef PredictiveGridOptimization < handle
             obj.GX=graph(SourceNode,TargetNode,EdgeWeightsX);
             SensitivityMatrixR=zeros(obj.NumberofBuses,obj.NumberofBuses);
             SensitivityMatrixX=zeros(obj.NumberofBuses,obj.NumberofBuses);
-            h=plot(obj.GR);
+%             h=plot(obj.GR);
             obj.DistancesR=distances(obj.GR);
             obj.DistancesX=distances(obj.GX);
 
-            for aa=1:obj.NumberofBuses
-                BusName=obj.NIS.OriginalBusNames(aa);
-                labelnode(h,aa,BusName);
-            end
+%             for aa=1:obj.NumberofBuses
+%                 BusName=obj.NIS.OriginalBusNames(aa);
+%                 labelnode(h,aa,BusName);
+%             end
             
             a=obj.NIS.Bus(1,1);
             ShortPathR=struct;
@@ -1176,31 +1203,31 @@ classdef PredictiveGridOptimization < handle
 
                DeltaV=zeros(1,length(R));
 %               DeltaV(1,:)=VoltageViolation;  % per volt
-               DeltaV(1,:)=VoltageViolation  % per unit
-               DeltaI=zeros(1,length(R))
+               DeltaV(1,:)=VoltageViolation;  % per unit
+               DeltaI=zeros(1,length(R));
 
                %DeltaI(1,:)=DeltaV(1,:)./Z(1,:) % per unit
-               DeltaI(1,:)=DeltaV(1,:)./R(1,:) % per unit
+               DeltaI(1,:)=DeltaV(1,:)./R(1,:); % per unit
                DeltaI(1,1)=0.0000002;   % Using a small value (0.002) to avoid inf because the first value of DeltaI is always inf (root bus)
                
 %                PowerNeed=zeros(1,length(DeltaV));
 %                VoltageBase(:,1)=obj.NIS.Bus(:,10); % kV
 %                PowerNeed(:,:)=1000*sqrt(3).*(VoltageBase'.*DeltaI(1,:)); % Power need per W (Although the flex need should be calculated in kW, but here for more accuracy W is used)
                
-               Ibase=obj.Ibase
+               Ibase=obj.Ibase;
                 
 %                Voltage=zeros(length(DeltaV),1);
 %                Voltage(:,:)=1;
                PowerNeed=zeros(1,obj.NumberofBuses);
                PowerNeed(:,:)=(obj.NIS.Sbase.Value)*1000*sqrt(3).*(DeltaI(1,:)) % Power Need per Watt
                %
-               Rth=obj.SensitivityMatrixR(BusNumber,BusNumber)
-               Xth=obj.SensitivityMatrixX(BusNumber,BusNumber)
-               Iscpu=1/abs(Rth+Xth)
-               MinDeltaI=DeltaI(1,BusNumber)
-               MinIbase=Ibase(BusNumber)
+               Rth=obj.SensitivityMatrixR(BusNumber,BusNumber);
+               Xth=obj.SensitivityMatrixX(BusNumber,BusNumber);
+               Iscpu=1/abs(Rth+Xth);
+               MinDeltaI=DeltaI(1,BusNumber);
+               MinIbase=Ibase(BusNumber);
                
-               MinPowerNeed=PowerNeed(1,BusNumber)
+               MinPowerNeed=PowerNeed(1,BusNumber);
                PowerNeed(1,1)=0;
 
                RS=zeros(obj.NumberofBuses,1);
@@ -1215,18 +1242,18 @@ classdef PredictiveGridOptimization < handle
                        RS(k,1)=1;
                    end
                end
-               PowerNeed=abs(RS'.*PowerNeed)    % absolute is needed to avoid having negative values
+               PowerNeed=abs(RS'.*PowerNeed);    % absolute is needed to avoid having negative values
                Column=find(PowerNeed(1,:)~=0);
-               PowerNeed(PowerNeed==0)=[]
-               [RealPowerMin,RealPowerMinIndex]=min(PowerNeed)  % related to risk policy of DSO
+               PowerNeed(PowerNeed==0)=[];
+               [RealPowerMin,RealPowerMinIndex]=min(PowerNeed);  % related to risk policy of DSO
                %RealPowerMinBusName=obj.NIS.OriginalBusNames(RealPowerMinIndex)
-               RealPowerMin=round(RealPowerMin)
-               RealPowerMin=roundn(RealPowerMin,1) %round to the nearest 10
+               RealPowerMin=round(RealPowerMin);
+               RealPowerMin=roundn(RealPowerMin,1); %round to the nearest 10
                
-               [RealPowerRequest,RealPowerRequestIndex]=max(PowerNeed) % related to risk policy of DSO
+               [RealPowerRequest,RealPowerRequestIndex]=max(PowerNeed); % related to risk policy of DSO
                %RealPowerRequestBusName=obj.NIS.OriginalBusNames(RealPowerRequestIndex)
-               RealPowerRequest=round(RealPowerRequest)
-               RealPowerRequest=roundn(RealPowerRequest,1) %round to the nearest 10
+               RealPowerRequest=round(RealPowerRequest);
+               RealPowerRequest=roundn(RealPowerRequest,1); %round to the nearest 10
                if RealPowerRequest==inf
                    RealPowerRequest=RealPowerMin;
                end
@@ -1403,10 +1430,10 @@ classdef PredictiveGridOptimization < handle
             x=string(x);
             x=str2double(x);
             for i=1:length(obj.FlexNeed) 
-                Need=obj.FlexNeed(i) % for testing purpuses
-                RealPowerMin=Need.RealPowerMin
-                RealPowerRequest=Need.RealPowerRequest
-                CustomerId=obj.FlexNeed(i).CustomerIds % for testing purpuses
+                Need=obj.FlexNeed(i); % for testing purpuses
+                RealPowerMin=Need.RealPowerMin;
+                RealPowerRequest=Need.RealPowerRequest;
+                CustomerId=obj.FlexNeed(i).CustomerIds; % for testing purpuses
                 if ~strcmp(obj.FlexNeed(i).CustomerIds,"None")
                    obj.CustomerIdExistanceFlag=1; 
                 end
@@ -1434,7 +1461,7 @@ classdef PredictiveGridOptimization < handle
                 CustomerIdNonExistance=find(strcmp(obj.FlexNeed(i).CustomerIds,"None"),1);  % To avoid sending flexibility need when there is no CustomerId inside congestion area
                 if isempty(CustomerIdNonExistance) 
                     AbstractResult.Type='FlexibilityNeed';
-                    AbstractResult.SimulationId=obj.SimulationId;
+                    AbstractResult.SimulationId=obj.SimulationId{1};
                     AbstractResult.SourceProcessId=obj.SourceProcessId;
                     obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                         s = strcat('PGO',num2str(obj.MessageCounterOutbound));
@@ -1598,7 +1625,7 @@ classdef PredictiveGridOptimization < handle
             for i=1:1:NumFlexNeeds
                if ~isempty (obj.FlexNeed(i).OfferId)
                     AbstractResult.Type='SelectedOffer';
-                    AbstractResult.SimulationId=obj.SimulationId;
+                    AbstractResult.SimulationId=obj.SimulationId{1};
                     AbstractResult.SourceProcessId=obj.SourceProcessId;
                     obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                         s = strcat('PGO',num2str(obj.MessageCounterOutbound));
@@ -1626,7 +1653,7 @@ classdef PredictiveGridOptimization < handle
                if (obj.InboundMessage.EpochNumber==obj.Epoch)
                     if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)      % just analyse the status message that is published by Grid
                         AbstractResult.Type='Status';
-                        AbstractResult.SimulationId=obj.SimulationId;
+                        AbstractResult.SimulationId=obj.SimulationId{1};
                         AbstractResult.SourceProcessId=obj.SourceProcessId;
                         obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                             s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));
@@ -1867,7 +1894,7 @@ classdef PredictiveGridOptimization < handle
            %%%
            if ReadyFlag==1
                AbstractResult.Type='Status';
-               AbstractResult.SimulationId=obj.SimulationId;
+               AbstractResult.SimulationId=obj.SimulationId{1};
                AbstractResult.SourceProcessId=obj.SourceProcessId;
                obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                     s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));

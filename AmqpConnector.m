@@ -13,9 +13,11 @@ global NumOfSimRun     % global variable for the whole Matlab environment specif
 global Handles
 global States
 global Object
+global SimulationId
 NumOfSimRun=0;
 Handles={};
 States={};
+SimulationId={};
 
 % the specs are for RTDS lab server connection.
 
@@ -35,7 +37,7 @@ States={};
 % set(notifier, 'ListenCallback', @(handleObj, ev)ManagementCallback(handleObj, ev));
 
 
-the specs are for Cyber secusrity lab server.
+% the specs are for Cyber secusrity lab server.
 amqpPropsM = eu.cocop.amqp2math.AmqpPropsManager('amqp.ain.rd.tut.fi','procem-management','procem-all','simu09LATION'); 
 amqpPropsM.setSecure(true);
 amqpPropsM.setPort(45671);
