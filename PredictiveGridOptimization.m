@@ -31,6 +31,7 @@ classdef PredictiveGridOptimization < handle
         BranchReactance
         Susceptance
         RS
+        FNM
         SensitivityMatrixR    % [R] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
         SensitivityMatrixX    % [X] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
         SensitivityMatrixZ   % [Z] matrix for sensitivity analysis according to DOI: 10.1109/ISIE.2010.5637545
@@ -38,6 +39,9 @@ classdef PredictiveGridOptimization < handle
         Zbase
         Ibase
         
+        % for testing
+        BusNameForTest
+        BusNodeForTest
         
         % Epoch
         Epoch
@@ -79,6 +83,8 @@ classdef PredictiveGridOptimization < handle
         CustomerIdExistanceFlag
         ReceivedAllVoltageForecastsFlag
         ReceivedAllCurrentForecastsFlag
+        NISBusAnalysisFlag
+        NISBranchAnalysisFlag
         
         % connector to simulation specific exchange (using ProcemPlus lib)
         AmqpConnector  
@@ -90,13 +96,14 @@ classdef PredictiveGridOptimization < handle
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Constructor
         
-        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline)  
+        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline)  
             obj.SimulationSpecificExchange = SimulationSpecificExchange; % Start message
             obj.SimulationId = SimulationId;
             obj.SourceProcessId = PGOName;
             obj.Grid = MonitoredGridId;
             obj.RS=RS;
                 obj.RS=1-((obj.RS)/100);
+            obj.FNM=FNM;
             obj.MaxVoltage=MaxVoltage; % p.u. value
             obj.MinVoltage=MinVoltage; % p.u. value
             obj.UpperAmberBandVoltage=UpperAmberBandVoltage; % p.u. value
@@ -126,7 +133,11 @@ classdef PredictiveGridOptimization < handle
             obj.OfferSelectedFlag=0;  % Flag is 1 once a flex Offer has been selected for congestion management
             obj.SlectedOfferForwardedFlag=0;  % Flag is 1 once an offer is selcted and LFM is informed about that
             obj.ReceivedAllVoltageForecastsFlag=0;
-            obj.ReceivedAllCurrentForecastsFlag=0;
+            obj.ReceivedAllCurrentForecastsFlag=1;
+            obj.NISBusAnalysisFlag=0;
+            obj.NISBranchAnalysisFlag=0;
+            obj.BusNameForTest={};
+            obj.BusNodeForTest=0;
 
             obj.State='Free';   % The object's default State is 'Free'
         end
@@ -307,7 +318,8 @@ classdef PredictiveGridOptimization < handle
                            VoltageViolationFlag=0;
                            obj.ReceivedAllVoltageForecastsFlag=0;
                            obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
-                           A=length(obj.InboundMessage.Forecast.TimeIndex);
+                           ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
+                           A=length(obj.InboundMessage.Forecast.TimeIndex)
                            if obj.ForecastLengthVoltage>0 % Since the ForecastLengthVoltage is 0 in the beggining of the Epoch, this condition only applies from second voltage value till the last
                                if obj.ForecastLengthVoltage~=A
                                    disp('The forecasts lengths are not stable')
@@ -321,6 +333,18 @@ classdef PredictiveGridOptimization < handle
                            TempVioDir=string(zeros(obj.ForecastLengthVoltage,1));
 
                            BusName=obj.InboundMessage.Bus;
+%                            BusName=string(BusName);
+%                            c=obj.NumberOfReceivedVoltageValues;
+%                            obj.BusNameForTest(c,1)=cellstr(BusName); % just for testing
+%                            Node=obj.InboundMessage.Node;
+%                            obj.BusNodeForTest(c,1)=Node;
+%                            if obj.NumberOfReceivedVoltageValues>1280 % just for testing
+%                                voltagevalues=obj.InboundMessage.Forecast.Series.Magnitude.Values
+%                                Timeind=obj.InboundMessage.Forecast.TimeIndex
+%                                BusNameForTest=obj.BusNameForTest
+%                                BusNodeForTest=obj.BusNodeForTest
+%                            end
+
                            Node=obj.InboundMessage.Node;
                            Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
                            NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
@@ -329,7 +353,7 @@ classdef PredictiveGridOptimization < handle
                            Vmin2=obj.MinVoltage*NominalVoltage;  % kV
                            Vmax2=obj.MaxVoltage*NominalVoltage; % kV
                            %Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values
-                           
+
                            %%%%% Voltage level analysis
                            for i=1:obj.ForecastLengthVoltage
                                VoltageViolationFlag=0;
@@ -383,9 +407,12 @@ classdef PredictiveGridOptimization < handle
                             obj.VoltageForecasts.CongestionNumber(From:To,:)=0;
 
                             %%%%% Deleting the rows without violation when all the voltage forecasts are received
-                            
+
                             obj.ExpectedNumberOfVoltageForecasts=obj.NumberofBuses*3*obj.ForecastLengthVoltage;  % Bus*Node*length of time series. change the Node value if the network is not three phase
                             if length(obj.VoltageForecasts.Time)==obj.ExpectedNumberOfVoltageForecasts
+                                disp('All voltages were received')
+                                expectedNumberOfVoltageForecasts=obj.ExpectedNumberOfVoltageForecasts
+                                ReceivedVoltages=length(obj.VoltageForecasts.Time)
                                 obj.ReceivedAllVoltageForecastsFlag=1;
                                 RowWithVio=find(obj.VoltageForecasts.Violation~=0);
                                 if ~isempty(RowWithVio)
@@ -409,8 +436,8 @@ classdef PredictiveGridOptimization < handle
 
                                 NextDayStart=dateshift(Today,'start','day','next');     
                                 NextDayEnd=dateshift(NextDayStart,'start','day','next');
-                                
-                                n=length(obj.VoltageForecasts.Time);   % It gives the number of violations
+
+                                n=length(obj.VoltageForecasts.Time)   % It gives the number of violations
 %                                 if ~isempty(n)
 %                                     for i=1:1:n
 %                                         x=obj.VoltageForecasts.Time(i);
@@ -432,11 +459,11 @@ classdef PredictiveGridOptimization < handle
                                 if ~isempty(n)
                                     obj.FlexNeedFlag=1;
                                     disp('Flex is needed- voltage')
-                                  if  obj.ReceivedAllCurrentForecastsFlag==1 
+                                    if  obj.ReceivedAllCurrentForecastsFlag==1 
                                         disp('Flex is needed- voltage')
                                         obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
                                         obj.FlexibilityNeed;
-                                  end
+                                    end
                                 else
                                   obj.StatusReadiness;
                                 end
@@ -449,11 +476,13 @@ classdef PredictiveGridOptimization < handle
                        if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Current')
                            obj.NumberOfReceivedCurrentValues=obj.NumberOfReceivedCurrentValues+1;
                            disp('Current forecast state is coming')
+                           ReceivedNumberOfCurrent=obj.NumberOfReceivedCurrentValues
                            obj.ReceivedAllCurrentForecastsFlag=0;
                            
                            obj.ForecastLengthCurrent=length(obj.InboundMessage.Forecast.TimeIndex);
+%                            B=obj.ForecastLengthCurrent
                            if obj.ForecastLengthCurrent~=obj.ForecastLengthVoltage
-                               disp('The length of forecasted current is not equal to the length of the forecasted voltage')
+                               disp('The length of forecasted current is not equal to the length of the forecasted voltage');
                            end
                            From=1+(obj.ForecastLengthCurrent*(obj.NumberOfReceivedCurrentValues-1));
                            To=obj.NumberOfReceivedCurrentValues*obj.ForecastLengthCurrent;
@@ -462,8 +491,8 @@ classdef PredictiveGridOptimization < handle
                            TempViolationSendingEnd=string(zeros(obj.ForecastLengthCurrent,1));
                            TempViolationReceivingEnd=string(zeros(obj.ForecastLengthCurrent,1));
 
-                           Row = find(strcmp(string(obj.NIS.DeviceId(:,1)),string(obj.InboundMessage.DeviceId)))
-                           disp(['DeviceId:' string(obj.InboundMessage.DeviceId)])
+                           Row = find(strcmp(string(obj.NIS.DeviceId(:,1)),string(obj.InboundMessage.DeviceId)));
+                           disp(['DeviceId:' string(obj.InboundMessage.DeviceId)]);
                            NominalCurrent=obj.NominalCurrent(Row,1);
                            Imax1=NominalCurrent*obj.AmberLoadingBaseline;
                            Imax2=NominalCurrent*obj.OverloadingBaseline;
@@ -522,6 +551,9 @@ classdef PredictiveGridOptimization < handle
                             % Deleting the rows without violation
                             
                             if length(obj.CurrentForecasts.Time)==(obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent)
+                                disp('All current forecasts were received')
+                                ExpectedCurrentValues=obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent
+                                ReceivedCurrentValues=length(obj.CurrentForecasts.Time)
                                 obj.ReceivedAllCurrentForecastsFlag=1;
                                 RowWithoutVioSending=find(obj.CurrentForecasts.ViolationSendingEnd==0);
                                 RowWithoutVioReceiving=find(obj.CurrentForecasts.ViolationReceivingEnd==0);
@@ -557,7 +589,7 @@ classdef PredictiveGridOptimization < handle
                                 NextDayStart=dateshift(Today,'start','day','next');     
                                 NextDayEnd=dateshift(NextDayStart,'start','day','next');
                                 
-                                n=length(obj.CurrentForecasts.Time);   % It gives the number of violations
+                                n=length(obj.CurrentForecasts.Time)   % It gives the number of violations
 %                                 if ~isempty(n)
 %                                     for i=1:1:n
 %                                         x=obj.CurrentForecasts.Time(i);
@@ -645,214 +677,231 @@ classdef PredictiveGridOptimization < handle
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 5
         
-        function NISBusAnalysis(obj) 
-            obj.State='Busy'; % The NIS structure is inspired by Power System Toolbox format. Please refer to that to know how data are organized in Bus and Branch matrixes.  
-            obj.NumberofBuses=numel(obj.InboundMessage.BusName);
-            %NumBuses=obj.NumberofBuses
-            obj.ExpectedNumberOfVoltageForecasts=(obj.NumberofBuses)*3;
-            NumberofBusColumn=14;
-            obj.NIS.BusUnits=cell(obj.NumberofBuses,NumberofBusColumn); 
-            obj.NIS.OriginalBusNames=cell(obj.NumberofBuses,1);
-            
-            %%%%% Bus name and Number
-            
-            RootBusRow=find(strcmp(obj.InboundMessage.BusType(:,1),"root"));
-            if RootBusRow>1    % bring the root bus to row number 1 
-                obj.InboundMessage.BusType([1 RootBusRow],1)=obj.InboundMessage.BusType([RootBusRow 1],1);
-                obj.InboundMessage.BusName([1 RootBusRow],1)=obj.InboundMessage.BusName([RootBusRow 1],1);
-                obj.InboundMessage.BusVoltageBase.Values([1 RootBusRow],1)=obj.InboundMessage.BusVoltageBase.Values([RootBusRow 1],1);
-            end
-            obj.NIS.OriginalBusNames=cellstr(obj.InboundMessage.BusName);
-            BusNames=obj.NIS.OriginalBusNames;
-            obj.NIS.Bus(:,1)=(1:length(obj.InboundMessage.BusName));
-            
-            %%%%% Bus Type
+        function NISBusAnalysis(obj)
+            if obj.NISBusAnalysisFlag==0
+                obj.State='Busy'; % The NIS structure is inspired by Power System Toolbox format. Please refer to that to know how data are organized in Bus and Branch matrixes.  
+                obj.NumberofBuses=numel(obj.InboundMessage.BusName);
+                NumofBuses=obj.NumberofBuses
+                obj.ExpectedNumberOfVoltageForecasts=(obj.NumberofBuses)*3;
+                NumberofBusColumn=14;
+                obj.NIS.BusUnits=cell(obj.NumberofBuses,NumberofBusColumn); 
+                obj.NIS.OriginalBusNames=cell(obj.NumberofBuses,1);
 
-            for i=1:1:obj.NumberofBuses   % Enumeration
-                if strcmp(string(obj.InboundMessage.BusType(i,1)),"root")
-                    obj.InboundMessage.BusType(i,1)=cellstr('3');
-                elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"dummy")
-                    obj.InboundMessage.BusType(i,1)=cellstr('1');
-                elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"usage-point")
-                    obj.InboundMessage.BusType(i,1)=cellstr('1');
+                %%%%% Bus name and Number
+
+                RootBusRow=find(strcmp(obj.InboundMessage.BusType(:,1),"root"));
+                if RootBusRow>1    % bring the root bus to row number 1 
+                    obj.InboundMessage.BusType([1 RootBusRow],1)=obj.InboundMessage.BusType([RootBusRow 1],1);
+                    obj.InboundMessage.BusName([1 RootBusRow],1)=obj.InboundMessage.BusName([RootBusRow 1],1);
+                    obj.InboundMessage.BusVoltageBase.Values([1 RootBusRow],1)=obj.InboundMessage.BusVoltageBase.Values([RootBusRow 1],1);
                 end
-            end
+                obj.NIS.OriginalBusNames=cellstr(obj.InboundMessage.BusName);
+                BusNames=obj.NIS.OriginalBusNames;
+                obj.NIS.Bus(:,1)=(1:length(obj.InboundMessage.BusName));
 
-            obj.NIS.Bus(:,2)=str2double(obj.InboundMessage.BusType);
+                %%%%% Bus Type
 
-             %%%%% Unit of measure
+                for i=1:1:obj.NumberofBuses   % Enumeration
+                    if strcmp(string(obj.InboundMessage.BusType(i,1)),"root")
+                        obj.InboundMessage.BusType(i,1)=cellstr('3');
+                    elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"dummy")
+                        obj.InboundMessage.BusType(i,1)=cellstr('1');
+                    elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"usage-point")
+                        obj.InboundMessage.BusType(i,1)=cellstr('1');
+                    end
+                end
 
-            if strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'kV')
-                obj.NIS.BusUnits(:,10)=cellstr('kV');
-                elseif strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'V')
-                    obj.NIS.BusUnits(:,10)=cellstr('V');
-            end
+                obj.NIS.Bus(:,2)=str2double(obj.InboundMessage.BusType);
 
-            %%%%% Bus voltage base
+                 %%%%% Unit of measure
 
-            obj.NIS.Bus(:,10)=obj.InboundMessage.BusVoltageBase.Values; % kV values
-            
-            %%%%% Voltage min and max
+                if strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'kV')
+                    obj.NIS.BusUnits(:,10)=cellstr('kV');
+                    elseif strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'V')
+                        obj.NIS.BusUnits(:,10)=cellstr('V');
+                end
 
-            obj.NIS.Bus(:,12)=obj.MinVoltage; % p.u. values
-            obj.NIS.Bus(:,13)=obj.MaxVoltage; % p.u. values
-            disp('Network initialization of the Bus matrix was done')
-            disp(['SimulationId:' obj.SimulationId])
-            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-            obj.NISBusFlag=1;
-            if obj.NISBranchFlag==1 % Assuring that first obj.NIS.Bus is created and after that obj.NIS.Branch is created 
-                obj.NISBranchAnalysis;
-            else
-                obj.State='Free';
-                obj.StatusReadiness;
+                %%%%% Bus voltage base
+
+                obj.NIS.Bus(:,10)=obj.InboundMessage.BusVoltageBase.Values; % kV values
+
+                %%%%% Voltage min and max
+
+                obj.NIS.Bus(:,12)=obj.MinVoltage; % p.u. values
+                obj.NIS.Bus(:,13)=obj.MaxVoltage; % p.u. values
+                disp('Network initialization of the Bus matrix was done')
+                obj.NISBusAnalysisFlag=1;
+                disp(['SimulationId:' obj.SimulationId])
+                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                obj.NISBusFlag=1;
+                if obj.NISBranchFlag==1 % Assuring that first obj.NIS.Bus is created and after that obj.NIS.Branch is created 
+                    obj.NISBranchAnalysis;
+                else
+                    obj.State='Free';
+                    obj.StatusReadiness;
+                end
             end
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 6        
         
         function NISBranchAnalysis(obj)
-            obj.State='Busy';
-            if obj.NISBusFlag==1
-               if obj.NISBranchFlag==1 % It means that NIS.NetworkBusInfo message has arrived earlier than NIS.NetworkBusInfo message
-                   obj.InboundMessage=obj.NISBranchData;
-               end
-                obj.NIS.Sbase.Value=obj.InboundMessage.PowerBase.Value;
-                obj.NIS.Sbase.UnitofMeasure=obj.InboundMessage.PowerBase.UnitOfMeasure;
-                NumberofBranches=length(obj.InboundMessage.SendingEndBus)
-                if NumberofBranches~=obj.NumberofBuses-1
-                   disp("The distribution network is not radial") 
-                end
-                obj.ExpectedNumberOfCurrentForecasts=NumberofBranches*3;
-                NumberOfBranchColumn=12;
-                obj.NIS.Branch=zeros(NumberofBranches,NumberOfBranchColumn);
-                obj.NIS.BranchUnits=cell(NumberofBranches,NumberOfBranchColumn);
-                obj.NIS.DeviceId=cell(NumberofBranches,1);
-                obj.NIS.OriginalNameofSendingEndBus=cell(NumberofBranches,1);
-                obj.NIS.OriginalNameofReceivingEndBus=cell(NumberofBranches,1);
-    
-                SourceBusName=obj.NIS.OriginalBusNames(1);
-                RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName))
-                if RootBusRow>1 % Assuring that the first line of the NIS.NetworkComponenetInfo starts with root bus (the change is needed because sensitivity analysis assumes that the first row contains the root bus)
-                    obj.InboundMessage.DeviceId([1 RootBusRow],1)=obj.InboundMessage.DeviceId([RootBusRow 1],1);
-                    obj.InboundMessage.SendingEndBus([1 RootBusRow],1)=obj.InboundMessage.SendingEndBus([RootBusRow 1],1);
-                    obj.InboundMessage.ReceivingEndBus([1 RootBusRow],1)=obj.InboundMessage.ReceivingEndBus([RootBusRow 1],1);
-                    obj.InboundMessage.Resistance.Values([1 RootBusRow],1)=obj.InboundMessage.Resistance.Values([RootBusRow 1],1);
-                    obj.InboundMessage.Reactance.Values([1 RootBusRow],1)=obj.InboundMessage.Reactance.Values([RootBusRow 1],1);
-                    obj.InboundMessage.ShuntAdmittance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntAdmittance.Values([RootBusRow 1],1);
-                    obj.InboundMessage.ShuntConductance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntConductance.Values([RootBusRow 1],1);
-                    obj.InboundMessage.RatedCurrent.Values([1 RootBusRow],1)=obj.InboundMessage.RatedCurrent.Values([RootBusRow 1],1);
-                end
-                obj.NIS.OriginalNameofSendingEndBus=cellstr(obj.InboundMessage.SendingEndBus);
-                obj.NIS.OriginalNameofReceivingEndBus=cellstr(obj.InboundMessage.ReceivingEndBus);
-                %%%%% 
+            if obj.NISBranchAnalysisFlag==0
+                obj.State='Busy';
+                if obj.NISBusFlag==1
+                   if obj.NISBranchFlag==1 % It means that NIS.NetworkBusInfo message has arrived earlier than NIS.NetworkBusInfo message
+                       obj.InboundMessage=obj.NISBranchData;
+                   end
+                    obj.NIS.Sbase.Value=obj.InboundMessage.PowerBase.Value;
+                    obj.NIS.Sbase.UnitofMeasure=obj.InboundMessage.PowerBase.UnitOfMeasure;
+                    NumberofBranches=length(obj.InboundMessage.SendingEndBus)
+                    if NumberofBranches~=obj.NumberofBuses-1
+                       disp("The distribution network is not radial") 
+                    end
+                    obj.ExpectedNumberOfCurrentForecasts=NumberofBranches*3;
+                    
+                    
+                    
+                    
+                    
+%                     obj.NumberOfReceivedCurrentValues= obj.ExpectedNumberOfCurrentForecasts; % just for testing
+                    
+                    
+                    
+                    
+                    
+                    NumberOfBranchColumn=12;
+                    obj.NIS.Branch=zeros(NumberofBranches,NumberOfBranchColumn);
+                    obj.NIS.BranchUnits=cell(NumberofBranches,NumberOfBranchColumn);
+                    obj.NIS.DeviceId=cell(NumberofBranches,1);
+                    obj.NIS.OriginalNameofSendingEndBus=cell(NumberofBranches,1);
+                    obj.NIS.OriginalNameofReceivingEndBus=cell(NumberofBranches,1);
 
-                for i=1:NumberofBranches  % since buses are named when NetworkBusInfo is arrived, then the same bus names for branches are used.
-                    A=string(obj.NIS.OriginalNameofSendingEndBus(i,1));
-                    row=find(strcmp(string(obj.NIS.OriginalBusNames),A)); % function "find" only acts on string arrays
-                    obj.NIS.Branch(i,1)=row;
-                    B=string(obj.NIS.OriginalNameofReceivingEndBus(i,1));
-                    row=find(strcmp(string(obj.NIS.OriginalBusNames),B));
-                    obj.NIS.Branch(i,2)=row;
-                end
+                    SourceBusName=obj.NIS.OriginalBusNames(1);
+                    RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName));
+                    if RootBusRow>1 % Assuring that the first line of the NIS.NetworkComponenetInfo starts with root bus (the change is needed because sensitivity analysis assumes that the first row contains the root bus)
+                        obj.InboundMessage.DeviceId([1 RootBusRow],1)=obj.InboundMessage.DeviceId([RootBusRow 1],1);
+                        obj.InboundMessage.SendingEndBus([1 RootBusRow],1)=obj.InboundMessage.SendingEndBus([RootBusRow 1],1);
+                        obj.InboundMessage.ReceivingEndBus([1 RootBusRow],1)=obj.InboundMessage.ReceivingEndBus([RootBusRow 1],1);
+                        obj.InboundMessage.Resistance.Values([1 RootBusRow],1)=obj.InboundMessage.Resistance.Values([RootBusRow 1],1);
+                        obj.InboundMessage.Reactance.Values([1 RootBusRow],1)=obj.InboundMessage.Reactance.Values([RootBusRow 1],1);
+                        obj.InboundMessage.ShuntAdmittance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntAdmittance.Values([RootBusRow 1],1);
+                        obj.InboundMessage.ShuntConductance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntConductance.Values([RootBusRow 1],1);
+                        obj.InboundMessage.RatedCurrent.Values([1 RootBusRow],1)=obj.InboundMessage.RatedCurrent.Values([RootBusRow 1],1);
+                    end
+                    obj.NIS.OriginalNameofSendingEndBus=cellstr(obj.InboundMessage.SendingEndBus);
+                    obj.NIS.OriginalNameofReceivingEndBus=cellstr(obj.InboundMessage.ReceivingEndBus);
+                    %%%%% 
 
-                obj.NIS.Branch(:,3)=obj.InboundMessage.Resistance.Values;
-                obj.NIS.BranchUnits(:,3)=cellstr(obj.InboundMessage.Resistance.UnitOfMeasure);
+                    for i=1:NumberofBranches  % since buses are named when NetworkBusInfo is arrived, then the same bus names for branches are used.
+                        A=string(obj.NIS.OriginalNameofSendingEndBus(i,1));
+                        row=find(strcmp(string(obj.NIS.OriginalBusNames),A)); % function "find" only acts on string arrays
+                        obj.NIS.Branch(i,1)=row;
+                        B=string(obj.NIS.OriginalNameofReceivingEndBus(i,1));
+                        row=find(strcmp(string(obj.NIS.OriginalBusNames),B));
+                        obj.NIS.Branch(i,2)=row;
+                    end
 
-                obj.NIS.Branch(:,4)=obj.InboundMessage.Reactance.Values;
-                obj.NIS.BranchUnits(:,4)=cellstr(obj.InboundMessage.Reactance.UnitOfMeasure);
+                    obj.NIS.Branch(:,3)=obj.InboundMessage.Resistance.Values;
+                    obj.NIS.BranchUnits(:,3)=cellstr(obj.InboundMessage.Resistance.UnitOfMeasure);
 
-                obj.NIS.Branch(:,5)=obj.InboundMessage.ShuntAdmittance.Values;
-                obj.NIS.BranchUnits(:,5)=cellstr(obj.InboundMessage.ShuntAdmittance.UnitOfMeasure);
+                    obj.NIS.Branch(:,4)=obj.InboundMessage.Reactance.Values;
+                    obj.NIS.BranchUnits(:,4)=cellstr(obj.InboundMessage.Reactance.UnitOfMeasure);
 
-                obj.NIS.Branch(:,6)=obj.InboundMessage.ShuntConductance.Values;
-                obj.NIS.BranchUnits(:,6)=cellstr(obj.InboundMessage.ShuntConductance.UnitOfMeasure);
+                    obj.NIS.Branch(:,5)=obj.InboundMessage.ShuntAdmittance.Values;
+                    obj.NIS.BranchUnits(:,5)=cellstr(obj.InboundMessage.ShuntAdmittance.UnitOfMeasure);
 
-                obj.NIS.Branch(:,12)=obj.InboundMessage.RatedCurrent.Values;
-                obj.NIS.BranchUnits(:,12)=cellstr(obj.InboundMessage.RatedCurrent.UnitOfMeasure);
-                obj.NIS.DeviceId=cellstr(obj.InboundMessage.DeviceId);
-                
-                %%%%% Calculation of the base values of current and impedance
-                
-                Ibase=zeros(NumberofBranches,1);
-                obj.NominalCurrent=zeros(NumberofBranches,1);
-                Zbase=zeros(NumberofBranches,1);
-                obj.BranchResistance=zeros(NumberofBranches,1);
-                
-                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
-                    if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
-                        for i=1:1:NumberofBranches
-                            Ibase(i,1)=1000*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); %Ibase
-                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
-                            Zbase(i,1)=obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)); %Zbase
-                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
-                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
-                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                    obj.NIS.Branch(:,6)=obj.InboundMessage.ShuntConductance.Values;
+                    obj.NIS.BranchUnits(:,6)=cellstr(obj.InboundMessage.ShuntConductance.UnitOfMeasure);
+
+                    obj.NIS.Branch(:,12)=obj.InboundMessage.RatedCurrent.Values;
+                    obj.NIS.BranchUnits(:,12)=cellstr(obj.InboundMessage.RatedCurrent.UnitOfMeasure);
+                    obj.NIS.DeviceId=cellstr(obj.InboundMessage.DeviceId);
+
+                    %%%%% Calculation of the base values of current and impedance
+
+                    Ibase=zeros(NumberofBranches,1);
+                    obj.NominalCurrent=zeros(NumberofBranches,1);
+                    Zbase=zeros(NumberofBranches,1);
+                    obj.BranchResistance=zeros(NumberofBranches,1);
+
+                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
+                        if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
+                            for i=1:1:NumberofBranches
+                                Ibase(i,1)=1000*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); %Ibase
+                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
+                                Zbase(i,1)=obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)); %Zbase
+                                obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
+                                obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                            end
                         end
                     end
-                end
-                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
-                    if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
-                         for i=1:1:NumberofBranches
-                            Ibase(i,1)=0.001*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); % Ibase
-                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12); % Ibase*ReatedCurrent
-                            Zbase(i,1)=1000*(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1))); %Zbase
-                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
-                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
-                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
-                         end
-                    end
-                end
-                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
-                    if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
-                        for i=1:1:NumberofBranches
-                            Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10)));  % Ibase
-                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
-                            Zbase(i,1)=(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)));
-                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
-                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
-                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
+                        if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
+                             for i=1:1:NumberofBranches
+                                Ibase(i,1)=0.001*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); % Ibase
+                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12); % Ibase*ReatedCurrent
+                                Zbase(i,1)=1000*(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1))); %Zbase
+                                obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
+                                obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                             end
                         end
                     end
-                end
-                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
-                    if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
-                        for i=1:1:NumberofBranches % Sbase="kV.A", Vbase="kV"
-                            SendingEndBusName=obj.InboundMessage.SendingEndBus(i);
-                            BusNumber=find(strcmp(obj.NIS.OriginalBusNames,SendingEndBusName));
-                            obj.Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(BusNumber,10)));  % Ibase(A)=Sbase/sqrt(3)*BusVoltageBase
-                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);  % NominalCurrent(A)=Ibase(A)*RatedCurrent(p.u.)
-                            obj.Zbase(i,1)=1000*(obj.NIS.Bus(BusNumber,10)/(sqrt(3)*Ibase(i,1))); %Zbase=1000(BusVoltageBase(kV)/sqrt(3)*Ibase(A))
-                            %obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3); % Branch resistance in Ohm
-                            obj.BranchResistance(i,1)=obj.NIS.Branch(i,3); % Branch resistance in p.u.                           
-                            obj.BranchReactance(i,1)=obj.NIS.Branch(i,4); % Branch reactance in p.u.
-                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
+                        if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
+                            for i=1:1:NumberofBranches
+                                Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10)));  % Ibase
+                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
+                                Zbase(i,1)=(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)));
+                                obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
+                                obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                            end
                         end
                     end
+                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
+                        if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
+                            for i=1:1:NumberofBranches % Sbase="kV.A", Vbase="kV"
+                                SendingEndBusName=obj.InboundMessage.SendingEndBus(i);
+                                BusNumber=find(strcmp(obj.NIS.OriginalBusNames,SendingEndBusName));
+                                obj.Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(BusNumber,10)));  % Ibase(A)=Sbase/sqrt(3)*BusVoltageBase
+                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);  % NominalCurrent(A)=Ibase(A)*RatedCurrent(p.u.)
+                                obj.Zbase(i,1)=1000*(obj.NIS.Bus(BusNumber,10)/(sqrt(3)*Ibase(i,1))); %Zbase=1000(BusVoltageBase(kV)/sqrt(3)*Ibase(A))
+                                %obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3); % Branch resistance in Ohm
+                                obj.BranchResistance(i,1)=obj.NIS.Branch(i,3); % Branch resistance in p.u.                           
+                                obj.BranchReactance(i,1)=obj.NIS.Branch(i,4); % Branch reactance in p.u.
+                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                            end
+                        end
+                    end
+                    format long
+                    Branchresistancepu=obj.BranchResistance(:,1);
+                    BranchReactance=obj.BranchReactance(:,1);
+                    From=obj.NIS.OriginalNameofSendingEndBus(:,1);
+                    To=obj.NIS.OriginalNameofReceivingEndBus(:,1);
+    %                 Zbase=Zbase
+
+    %                BranchResistancepu=obj.NIS.Branch(:,3)
+    %                 FromBus=obj.NIS.OriginalNameofSendingEndBus
+    %                 ToBus=obj.NIS.OriginalNameofReceivingEndBus
+    %                BranchResistanceohm=obj.BranchResistance
+
+
+                    clear NumberofBranches NumberOfBranchColumn    % Freeing up memory
+
+
+                    disp('Network initialization of the Branch matrix was done')
+                    obj.NISBranchAnalysisFlag=1;
+                    disp(['SimulationId:' obj.SimulationId])
+                    disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                    obj.SensitivityAnalysis
+               else
+                   obj.NISBranchData=obj.InboundMessage;
+                   obj.NISBranchFlag=1;
+                   disp('NIS.NetworkBusInfo was received earlier than NIS.NetworkBusInfo')
                 end
-                format long
-                Branchresistancepu=obj.BranchResistance(:,1);
-                BranchReactance=obj.BranchReactance(:,1);
-                From=obj.NIS.OriginalNameofSendingEndBus(:,1);
-                To=obj.NIS.OriginalNameofReceivingEndBus(:,1);
-%                 Zbase=Zbase
-                
-%                BranchResistancepu=obj.NIS.Branch(:,3)
-%                 FromBus=obj.NIS.OriginalNameofSendingEndBus
-%                 ToBus=obj.NIS.OriginalNameofReceivingEndBus
-%                BranchResistanceohm=obj.BranchResistance
-                
-                
-                clear NumberofBranches NumberOfBranchColumn    % Freeing up memory
-                
-                
-                disp('Network initialization of the Branch matrix was done')
-                disp(['SimulationId:' obj.SimulationId])
-                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                obj.SensitivityAnalysis
-           else
-               obj.NISBranchData=obj.InboundMessage;
-               obj.NISBranchFlag=1;
-               disp('NIS.NetworkBusInfo was received earlier than NIS.NetworkBusInfo')
             end
         end
         
@@ -1075,9 +1124,9 @@ classdef PredictiveGridOptimization < handle
             Counter=0;
             i=1;
             if obj.RS>0.9
-                MinCongestionZone=0.1 % This is needed to avoid having too many zongestion areas
+                MinCongestionZone=0.1; % This is needed to avoid having too many zongestion areas
             else
-                MinCongestionZone=0
+                MinCongestionZone=0;
             end
             while i<=CNumber
                 if Counter>0
@@ -1165,7 +1214,7 @@ classdef PredictiveGridOptimization < handle
             end 
             
            disp("Numbering was completed")
-           Temporary=obj.VoltageForecasts
+           %Temporary=obj.VoltageForecasts
            CNumber=max(obj.VoltageForecasts.CongestionNumber) 
            for i=1:1:CNumber   % processing each congestion number, one by one
                 Rows=find(obj.VoltageForecasts.CongestionNumber==i);
@@ -1316,18 +1365,6 @@ classdef PredictiveGridOptimization < handle
                 obj.FlexNeed(i).BidResolution.UnitOfMeasure="kW"; 
                 clear Congestion CustomerIds BusNames
            end
-            
-           % Just for testing
-%            for i=1:length(obj.FlexNeed) 
-%                 Need=obj.FlexNeed(i) % for testing purpuses
-%                 RealPowerMin=Need.RealPowerMin
-%                 RealPowerRequest=Need.RealPowerRequest
-%                 CustomerId=obj.FlexNeed(i).CustomerIds % for testing purpuses
-%                 if ~strcmp(obj.FlexNeed(i).CustomerIds,"None")
-%                    obj.CustomerIdExistanceFlag=1; 
-%                 end
-%            end
-%            SavedFlexNeed=jsonencode(obj.FlexNeed)
            
            
             %%%%% Deleting the CustomerIds that are common between flexibility needs with a same activation time but opposite direction using relative sensitivity calculation
@@ -1430,10 +1467,6 @@ classdef PredictiveGridOptimization < handle
             x=string(x);
             x=str2double(x);
             for i=1:length(obj.FlexNeed) 
-                Need=obj.FlexNeed(i); % for testing purpuses
-                RealPowerMin=Need.RealPowerMin;
-                RealPowerRequest=Need.RealPowerRequest;
-                CustomerId=obj.FlexNeed(i).CustomerIds; % for testing purpuses
                 if ~strcmp(obj.FlexNeed(i).CustomerIds,"None")
                    obj.CustomerIdExistanceFlag=1; 
                 end
@@ -1662,6 +1695,7 @@ classdef PredictiveGridOptimization < handle
                         AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
                         ErrorFlag=0;
                         ReadinessFlag=0;
+                        WarningFlag=0;
 
                         %%%%%
 
@@ -1692,7 +1726,7 @@ classdef PredictiveGridOptimization < handle
                             if (obj.ExpectedNumberOfVoltageForecasts~=obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                                     AbstractResult.Value='error';
-                                    ErrorFlag=1;
+                                    WarningFlag=1;
                                     AbstractResult.Description='Forecasted Voltage values werenot received completely';
                                     disp('PGO reported "error" message to Simulation Manager because the forecasted voltage values werenot received completely')
                                     disp(['SimulationId:' obj.SimulationId])
@@ -1704,7 +1738,7 @@ classdef PredictiveGridOptimization < handle
                             if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
                                     AbstractResult.Value='error';
-                                    ErrorFlag=1;
+                                    WarningFlag=1;
                                     AbstractResult.Description='Forecasted current values werenot received completely';
                                     disp('PGO reported "error" message to Simulation Manager because the forecasted current values werenot received completely')
                                     disp(['SimulationId:' obj.SimulationId])
@@ -1716,7 +1750,7 @@ classdef PredictiveGridOptimization < handle
                             if (obj.ExpectedNumberOfVoltageForecasts~=obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
                                     AbstractResult.Value='error';
-                                    ErrorFlag=1;
+                                    WarningFlag=1;
                                     AbstractResult.Description='Neither forecasted votage nor current values were received completely';
                                     disp('PGO reported "error" message to Simulation Manager because both forecasted voltage and current values were incomplete')
                                     disp(['SimulationId:' obj.SimulationId])

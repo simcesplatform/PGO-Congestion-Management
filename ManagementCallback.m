@@ -20,6 +20,7 @@ function ManagementCallback(hObject, eventData)
 
             Grid=PredictiveGridOptimizationBlock.(PGOName).MonitoredGridName;
             RS=PredictiveGridOptimizationBlock.(PGOName).RelativeSensitivity;
+            FNM=PredictiveGridOptimizationBlock.(PGOName).FlexibilityNeedMargin;
             MaxVoltage=PredictiveGridOptimizationBlock.(PGOName).MaxVoltage;
             MinVoltage=PredictiveGridOptimizationBlock.(PGOName).MinVoltage;
             UpperAmberBandVoltage=PredictiveGridOptimizationBlock.(PGOName).UpperAmberBandVoltage;
@@ -27,7 +28,7 @@ function ManagementCallback(hObject, eventData)
             OverloadingBaseline=PredictiveGridOptimizationBlock.(PGOName).OverloadingBaseline;
             AmberLoadingBaseline=PredictiveGridOptimizationBlock.(PGOName).AmberLoadingBaseline;
 
-            Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline);
+            Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline);
 %             Handles{NumOfSimRun} = @() Object(NumOfSimRun).Main;
 %             States{NumOfSimRun}=parfeval(@() Object.Main,1);
             Object(NumOfSimRun).Main
@@ -48,7 +49,8 @@ function ManagementCallback(hObject, eventData)
                     PGOName = fields{1,1};
 
                     Grid=PredictiveGridOptimizationBlock.(PGOName).MonitoredGridName;
-                    Sensitivity=PredictiveGridOptimizationBlock.(PGOName).RelativeSensitivity;                    
+                    RS=PredictiveGridOptimizationBlock.(PGOName).RelativeSensitivity;
+                    FNM=PredictiveGridOptimizationBlock.(PGOName).FlexibilityNeedMargin;
                     MaxVoltage=PredictiveGridOptimizationBlock.(PGOName).MaxVoltage;
                     MinVoltage=PredictiveGridOptimizationBlock.(PGOName).MinVoltage;
                     UpperAmberBandVoltage=PredictiveGridOptimizationBlock.(PGOName).UpperAmberBandVoltage;
@@ -56,7 +58,7 @@ function ManagementCallback(hObject, eventData)
                     OverloadingBaseline=PredictiveGridOptimizationBlock.(PGOName).OverloadingBaseline;
                     AmberLoadingBaseline=PredictiveGridOptimizationBlock.(PGOName).AmberLoadingBaseline;
 
-                    Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,Sensitivity,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline);
+                    Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline);
 %                     Handles{NumOfSimRun} = @() Object(NumOfSimRun).Main;
 %                     States{NumOfSimRun}=parfeval(@() Object.Main,1);
                     Object(NumOfSimRun).Main
