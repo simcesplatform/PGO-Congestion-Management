@@ -103,7 +103,7 @@ classdef PredictiveGridOptimization < handle
             obj.Grid = MonitoredGridId;
             obj.RS=RS;
                 obj.RS=1-((obj.RS)/100);
-            obj.FNM=FNM;
+            obj.FNM=FNM+1;
             obj.MaxVoltage=MaxVoltage; % p.u. value
             obj.MinVoltage=MinVoltage; % p.u. value
             obj.UpperAmberBandVoltage=UpperAmberBandVoltage; % p.u. value
@@ -133,7 +133,7 @@ classdef PredictiveGridOptimization < handle
             obj.OfferSelectedFlag=0;  % Flag is 1 once a flex Offer has been selected for congestion management
             obj.SlectedOfferForwardedFlag=0;  % Flag is 1 once an offer is selcted and LFM is informed about that
             obj.ReceivedAllVoltageForecastsFlag=0;
-            obj.ReceivedAllCurrentForecastsFlag=1;
+            obj.ReceivedAllCurrentForecastsFlag=0;
             obj.NISBusAnalysisFlag=0;
             obj.NISBranchAnalysisFlag=0;
             obj.BusNameForTest={};
@@ -185,7 +185,7 @@ classdef PredictiveGridOptimization < handle
             topicsIn(2) = java.lang.String('Status.Ready'); % PGO needs to listen to Status.Ready topic published by of Grid 
             topicsIn(3) = java.lang.String('Status.Error'); % PGO needs to listen to Status.Error topic published by Grid
             topicsIn(4) = java.lang.String('Epoch');    % PGO needs to listen to Epoch topic published by Simulation manager
-            topicsIn(5) = java.lang.String('NetworkForecastState.#'); % PGO needs to listen to NetworkState.Voltage.# topic published by Grid. (# is wild card to receive all voltage data)
+            topicsIn(5) = java.lang.String('NetworkForecastState.GridA.Voltage.#'); % PGO needs to listen to NetworkState.Voltage.# topic published by Grid. (# is wild card to receive all voltage data)
 %            topicsIn(6) = java.lang.String('NetworkForecastState.Current.#'); % PGO needs to listen to NetworkState.Current.# topic published by Grid. (# is wild card to receive all voltage data)
             topicsIn(6) = java.lang.String('Init.NIS.NetworkBusInfo');  % PGO needs to listen to Init.NIS.NetworkBusInfo topic published by Grid in the Epoch 1 
             topicsIn(7) = java.lang.String('Init.NIS.NetworkComponentInfo');    % PGO needs to listen to Init.NIS.NetworkComponentInfo topic published by Grid in the Epoch 1
@@ -254,36 +254,38 @@ classdef PredictiveGridOptimization < handle
                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When SimulationManager publishes the Epoch message 
 
                        if strcmp(obj.InboundMessage.Type,'Epoch')
-                            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%') % for visualization purposes
-                            disp(['Epoch number=' num2str(obj.InboundMessage.EpochNumber)])
-                            disp(['Start Time=' obj.InboundMessage.StartTime])
-                            disp(['End Time=' obj.InboundMessage.EndTime])
-                            disp(['SimulationId:' obj.SimulationId])
-                            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                            obj.Epoch=obj.InboundMessage.EpochNumber;              % Making the Epoch number the Object's property
-                            obj.StartTime=char(obj.InboundMessage.StartTime);
-                            obj.EndTime=char(obj.InboundMessage.StartTime);
-                            obj.NumberOfReceivedVoltageValues=0;    % Resetting the number of received forecasted voltage values
-                            obj.NumberOfReceivedCurrentValues=0;    % Resetting the number of received forecasted current values
-                            obj.MessageCounterOutbound=0;   % Resetting the number of outbound message for each Epoch
-                            obj.ForecastLengthVoltage=0; % Resetting the length of the forecasts- voltage
-                            obj.ForecastLengthCurrent=0; % Resetting the length of the forecasts- current
-                            obj.OfferCounter=0;
+                           if obj.InboundMessage.EpochNumber>obj.Epoch
+                                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%') % for visualization purposes
+                                disp(['Epoch number=' num2str(obj.InboundMessage.EpochNumber)])
+                                disp(['Start Time=' obj.InboundMessage.StartTime])
+                                disp(['End Time=' obj.InboundMessage.EndTime])
+                                disp(['SimulationId:' obj.SimulationId])
+                                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                                obj.Epoch=obj.InboundMessage.EpochNumber;              % Making the Epoch number the Object's property
+                                obj.StartTime=char(obj.InboundMessage.StartTime);
+                                obj.EndTime=char(obj.InboundMessage.StartTime);
+                                obj.NumberOfReceivedVoltageValues=0;    % Resetting the number of received forecasted voltage values
+                                obj.NumberOfReceivedCurrentValues=0;    % Resetting the number of received forecasted current values
+                                obj.MessageCounterOutbound=0;   % Resetting the number of outbound message for each Epoch
+                                obj.ForecastLengthVoltage=0; % Resetting the length of the forecasts- voltage
+                                obj.ForecastLengthCurrent=0; % Resetting the length of the forecasts- current
+                                obj.OfferCounter=0;
 
-                            obj.GridReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
-                            obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 which means there is no flex need unless otherwise discovered.
-                            obj.OfferReceivedFlag=0; % Resetting the available offer flag. The defalut is 0 showing that, currently, there is no available offer in the market
-                            obj.OfferSelectedFlag=0;  % Resetting the offer selected flag. The default is 0 showing that any offer has not yet been selected duting the running Epoch.
-                            obj.FlexNeedTimeFlag=0;  % Resetting the flag. The default is 0 showing that the reght time (depending on when LFM market operates) has not arrived for sending the flexibility need.
-                            obj.OfferSelectionTimeFlag=0; % Resetting the flag. The default is 0 showing that the time for selecting the offers has not occured yet.
-                            obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 showing that No CustomerId exist within a congestion area  
-                            
-                            x=obj.StartTime(12:14);
-                            x=str2double(x);
-                            if x==0
-                                obj.Offer=[];       % resetting the offers for a new day.
-                                obj.FlexNeedSentFlag=0;   % Resetting the flex sent flag for the new day.
-                            end
+                                obj.GridReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
+                                obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 which means there is no flex need unless otherwise discovered.
+                                obj.OfferReceivedFlag=0; % Resetting the available offer flag. The defalut is 0 showing that, currently, there is no available offer in the market
+                                obj.OfferSelectedFlag=0;  % Resetting the offer selected flag. The default is 0 showing that any offer has not yet been selected duting the running Epoch.
+                                obj.FlexNeedTimeFlag=0;  % Resetting the flag. The default is 0 showing that the reght time (depending on when LFM market operates) has not arrived for sending the flexibility need.
+                                obj.OfferSelectionTimeFlag=0; % Resetting the flag. The default is 0 showing that the time for selecting the offers has not occured yet.
+                                obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 showing that No CustomerId exist within a congestion area  
+
+                                x=obj.StartTime(12:14);
+                                x=str2double(x);
+                                if x==0
+                                    obj.Offer=[];       % resetting the offers for a new day.
+                                    obj.FlexNeedSentFlag=0;   % Resetting the flex sent flag for the new day.
+                                end
+                           end
                         end
                         
                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Bus data message- NIS
@@ -314,160 +316,148 @@ classdef PredictiveGridOptimization < handle
                     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's voltage forecasts
                         
                        if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Voltage')
-                           disp('Voltage forecast state is coming')
-                           VoltageViolationFlag=0;
-                           obj.ReceivedAllVoltageForecastsFlag=0;
-                           obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
-                           ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
-                           A=length(obj.InboundMessage.Forecast.TimeIndex)
-                           if obj.ForecastLengthVoltage>0 % Since the ForecastLengthVoltage is 0 in the beggining of the Epoch, this condition only applies from second voltage value till the last
-                               if obj.ForecastLengthVoltage~=A
-                                   disp('The forecasts lengths are not stable')
-                               end
-                           end
-                           obj.ForecastLengthVoltage=A;
-                           From=1+(obj.ForecastLengthVoltage*(obj.NumberOfReceivedVoltageValues-1));
-                           To=obj.NumberOfReceivedVoltageValues*obj.ForecastLengthVoltage;
-                           TempStatus=string(zeros(obj.ForecastLengthVoltage,1));
-                           TempViolation=string(zeros(obj.ForecastLengthVoltage,1));
-                           TempVioDir=string(zeros(obj.ForecastLengthVoltage,1));
-
-                           BusName=obj.InboundMessage.Bus;
-%                            BusName=string(BusName);
-%                            c=obj.NumberOfReceivedVoltageValues;
-%                            obj.BusNameForTest(c,1)=cellstr(BusName); % just for testing
-%                            Node=obj.InboundMessage.Node;
-%                            obj.BusNodeForTest(c,1)=Node;
-%                            if obj.NumberOfReceivedVoltageValues>1280 % just for testing
-%                                voltagevalues=obj.InboundMessage.Forecast.Series.Magnitude.Values
-%                                Timeind=obj.InboundMessage.Forecast.TimeIndex
-%                                BusNameForTest=obj.BusNameForTest
-%                                BusNodeForTest=obj.BusNodeForTest
-%                            end
-
-                           Node=obj.InboundMessage.Node;
-                           Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
-                           NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
-                           Vmin1=(obj.MinVoltage+obj.LowerAmberBandVoltage)*NominalVoltage;  % kV
-                           Vmax1=(obj.MaxVoltage-obj.UpperAmberBandVoltage)*NominalVoltage; % kV
-                           Vmin2=obj.MinVoltage*NominalVoltage;  % kV
-                           Vmax2=obj.MaxVoltage*NominalVoltage; % kV
-                           %Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values
-
-                           %%%%% Voltage level analysis
-                           for i=1:obj.ForecastLengthVoltage
+                           if obj.InboundMessage.Node<4
                                VoltageViolationFlag=0;
-                               if (obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmax1)
-                                   if (obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmax2)
-                                       Status="close-to-limits";
-                                       Violation=0;
-                                       VoltageViolationFlag=1;
-                                       VioDir="";
+                               obj.ReceivedAllVoltageForecastsFlag=0;
+                               obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
+                               ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
+                               A=length(obj.InboundMessage.Forecast.TimeIndex);
+                               if obj.ForecastLengthVoltage>0 % Since the ForecastLengthVoltage is 0 in the beggining of the Epoch, this condition only applies from second voltage value till the last
+                                   if obj.ForecastLengthVoltage~=A
+                                       disp('The forecasts lengths are not stable')
                                    end
                                end
-                               if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmax2
-                                   Status="unacceptable";
-                                   Violation=((obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)-Vmax2)/NominalVoltage);
-                                   VoltageViolationFlag=1;
-                                   VioDir="over";
-                               end
-                               if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmin1
-                                   if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmin2
-                                       Status="close-to-limits";
-                                       Violation=0;
+                               obj.ForecastLengthVoltage=A;
+                               From=1+(obj.ForecastLengthVoltage*(obj.NumberOfReceivedVoltageValues-1));
+                               To=obj.NumberOfReceivedVoltageValues*obj.ForecastLengthVoltage;
+                               TempStatus=string(zeros(obj.ForecastLengthVoltage,1));
+                               TempViolation=string(zeros(obj.ForecastLengthVoltage,1));
+                               TempVioDir=string(zeros(obj.ForecastLengthVoltage,1));
+
+%                               BusName=obj.InboundMessage.Bus;
+%                               Node=obj.InboundMessage.Node;
+                               Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
+                               NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
+                               Vmin1=(obj.MinVoltage+obj.LowerAmberBandVoltage)*NominalVoltage;  % kV
+                               Vmax1=(obj.MaxVoltage-obj.UpperAmberBandVoltage)*NominalVoltage; % kV
+                               Vmin2=obj.MinVoltage*NominalVoltage;  % kV
+                               Vmax2=obj.MaxVoltage*NominalVoltage; % kV
+                               %Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values
+
+                               %%%%% Voltage level analysis
+                               for i=1:obj.ForecastLengthVoltage
+                                   VoltageViolationFlag=0;
+                                   if (obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmax1)
+                                       if (obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmax2)
+                                           Status="close-to-limits";
+                                           Violation=0;
+                                           VoltageViolationFlag=1;
+                                           VioDir="";
+                                       end
+                                   end
+                                   if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmax2
+                                       Status="unacceptable";
+                                       Violation=((obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)-Vmax2)/NominalVoltage);
                                        VoltageViolationFlag=1;
+                                       VioDir="over";
+                                   end
+                                   if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmin1
+                                       if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmin2
+                                           Status="close-to-limits";
+                                           Violation=0;
+                                           VoltageViolationFlag=1;
+                                           VioDir="";
+                                       end
+                                   end
+                                   if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmin2
+                                       Status="unacceptable";
+                                       Violation=((Vmin2-obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1))/NominalVoltage);
+                                       VoltageViolationFlag=1;
+                                       VioDir="under";
+                                   end
+                                   if VoltageViolationFlag==0
+                                       Status="acceptable";
+                                       Violation=0;
                                        VioDir="";
                                    end
+                                   TempStatus(i,1)=Status;
+                                   TempViolation(i,1)=Violation;
+                                   TempVioDir(i,1)=VioDir;
                                end
-                               if obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmin2
-                                   Status="unacceptable";
-                                   Violation=((Vmin2-obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1))/NominalVoltage);
-                                   VoltageViolationFlag=1;
-                                   VioDir="under";
-                               end
-                               if VoltageViolationFlag==0
-                                   Status="acceptable";
-                                   Violation=0;
-                                   VioDir="";
-                               end
-                               TempStatus(i,1)=Status;
-                               TempViolation(i,1)=Violation;
-                               TempVioDir(i,1)=VioDir;
+                                warning('off')     % this is needed to supress the warning messages in command window. The reason of the warning is that by adding new rows to the VoltageForecast table, some columns still donot have value.
+                                obj.VoltageForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
+                                obj.VoltageForecasts.Voltage(From:To,:)=obj.InboundMessage.Forecast.Series.Magnitude.Values;
+                                obj.VoltageForecasts.Violation(From:To,:)=TempViolation;
+                                obj.VoltageForecasts.BusNumber(From:To,:)=Row;
+                                obj.VoltageForecasts.BusName(From:To,:)=obj.InboundMessage.Bus;
+                                obj.VoltageForecasts.Node(From:To,:)=obj.InboundMessage.Node;
+                                obj.VoltageForecasts.Angle(From:To,:)=obj.InboundMessage.Forecast.Series.Angle.Values;
+                                obj.VoltageForecasts.Status(From:To,:)=TempStatus;
+                                obj.VoltageForecasts.VioDirection(From:To,:)=TempVioDir;
+                                obj.VoltageForecasts.CongestionNumber(From:To,:)=0;
+
+                                %%%%% Deleting the rows without violation when all the voltage forecasts are received
+
+                                obj.ExpectedNumberOfVoltageForecasts=obj.NumberofBuses*3*obj.ForecastLengthVoltage;  % Bus*Node*length of time series. change the Node value if the network is not three phase
+                                if length(obj.VoltageForecasts.Time)==obj.ExpectedNumberOfVoltageForecasts
+                                    disp('All voltages were received')
+                                    
+                                    obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues
+                                    obj.ReceivedAllVoltageForecastsFlag=1;
+                                    RowWithVio=find(obj.VoltageForecasts.Violation~=0);
+                                    if ~isempty(RowWithVio)
+                                        n=length(RowWithVio);
+                                        for k=1:1:n
+                                            Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
+                                        end
+                                    obj.VoltageForecasts=[];
+                                    obj.VoltageForecasts=Temporary;
+                                    clear Temporary
+                                    % buying flex from LFM will be from 00:00 next day to 23:59, therefore, voltage violations of the next day is only considered
+
+                                    x=obj.StartTime;
+                                    type=class(x);
+                                    if strcmp(type,"string")
+                                        x=char(x);
+                                    end
+
+                                    Today=x(1:10);
+                                    Today=datetime(Today,'InputFormat','yyyy-MM-dd');
+
+                                    NextDayStart=dateshift(Today,'start','day','next');     
+                                    NextDayEnd=dateshift(NextDayStart,'start','day','next');
+
+                                    n=length(obj.VoltageForecasts.Time)   % It gives the number of violations
+    %                                 if ~isempty(n)
+    %                                     for i=1:1:n
+    %                                         x=obj.VoltageForecasts.Time(i);
+    %                                         type=class(x);
+    %                                         if strcmp(type,"string")
+    %                                             x=char(x);
+    %                                         end
+    %                                         x=x(1:10);
+    %                                         x=datetime(x,'InputFormat','yyyy-MM-dd');
+    %                                         if x<=NextDayEnd
+    %                                             obj.VoltageForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
+    %                                         end
+    %                                         if x>=NextDayStart
+    %                                             obj.VoltageForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
+    %                                         end
+    %                                     end
+    %                                 end
+                                    end
+                                    if ~isempty(n)
+                                        obj.FlexNeedFlag=1;
+                                        if  obj.ReceivedAllCurrentForecastsFlag==1 
+                                            disp('Flex is needed- voltage')
+                                            obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
+                                            obj.FlexibilityNeed;
+                                        end
+                                    else
+                                      obj.StatusReadiness;
+                                    end
+                                end
                            end
-                            warning('off')     % this is needed to supress the warning messages in command window. The reason of the warning is that by adding new rows to the VoltageForecast table, some columns still donot have value.
-                            obj.VoltageForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
-                            obj.VoltageForecasts.Voltage(From:To,:)=obj.InboundMessage.Forecast.Series.Magnitude.Values;
-                            obj.VoltageForecasts.Violation(From:To,:)=TempViolation;
-                            obj.VoltageForecasts.BusNumber(From:To,:)=Row;
-                            obj.VoltageForecasts.BusName(From:To,:)=obj.InboundMessage.Bus;
-                            obj.VoltageForecasts.Node(From:To,:)=obj.InboundMessage.Node;
-                            obj.VoltageForecasts.Angle(From:To,:)=obj.InboundMessage.Forecast.Series.Angle.Values;
-                            obj.VoltageForecasts.Status(From:To,:)=TempStatus;
-                            obj.VoltageForecasts.VioDirection(From:To,:)=TempVioDir;
-                            obj.VoltageForecasts.CongestionNumber(From:To,:)=0;
-
-                            %%%%% Deleting the rows without violation when all the voltage forecasts are received
-
-                            obj.ExpectedNumberOfVoltageForecasts=obj.NumberofBuses*3*obj.ForecastLengthVoltage;  % Bus*Node*length of time series. change the Node value if the network is not three phase
-                            if length(obj.VoltageForecasts.Time)==obj.ExpectedNumberOfVoltageForecasts
-                                disp('All voltages were received')
-                                expectedNumberOfVoltageForecasts=obj.ExpectedNumberOfVoltageForecasts
-                                ReceivedVoltages=length(obj.VoltageForecasts.Time)
-                                obj.ReceivedAllVoltageForecastsFlag=1;
-                                RowWithVio=find(obj.VoltageForecasts.Violation~=0);
-                                if ~isempty(RowWithVio)
-                                    n=length(RowWithVio);
-                                    for k=1:1:n
-                                        Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
-                                    end
-                                obj.VoltageForecasts=[];
-                                obj.VoltageForecasts=Temporary;
-                                clear Temporary
-                                % buying flex from LFM will be from 00:00 next day to 23:59, therefore, voltage violations of the next day is only considered
-
-                                x=obj.StartTime;
-                                type=class(x);
-                                if strcmp(type,"string")
-                                    x=char(x);
-                                end
-
-                                Today=x(1:10);
-                                Today=datetime(Today,'InputFormat','yyyy-MM-dd');
-
-                                NextDayStart=dateshift(Today,'start','day','next');     
-                                NextDayEnd=dateshift(NextDayStart,'start','day','next');
-
-                                n=length(obj.VoltageForecasts.Time)   % It gives the number of violations
-%                                 if ~isempty(n)
-%                                     for i=1:1:n
-%                                         x=obj.VoltageForecasts.Time(i);
-%                                         type=class(x);
-%                                         if strcmp(type,"string")
-%                                             x=char(x);
-%                                         end
-%                                         x=x(1:10);
-%                                         x=datetime(x,'InputFormat','yyyy-MM-dd');
-%                                         if x<=NextDayEnd
-%                                             obj.VoltageForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
-%                                         end
-%                                         if x>=NextDayStart
-%                                             obj.VoltageForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
-%                                         end
-%                                     end
-%                                 end
-                                end
-                                if ~isempty(n)
-                                    obj.FlexNeedFlag=1;
-                                    disp('Flex is needed- voltage')
-                                    if  obj.ReceivedAllCurrentForecastsFlag==1 
-                                        disp('Flex is needed- voltage')
-                                        obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
-                                        obj.FlexibilityNeed;
-                                    end
-                                else
-                                  obj.StatusReadiness;
-                                end
-                            end
                         end
 
                         
@@ -759,16 +749,9 @@ classdef PredictiveGridOptimization < handle
                        disp("The distribution network is not radial") 
                     end
                     obj.ExpectedNumberOfCurrentForecasts=NumberofBranches*3;
-                    
-                    
-                    
-                    
-                    
-%                     obj.NumberOfReceivedCurrentValues= obj.ExpectedNumberOfCurrentForecasts; % just for testing
-                    
-                    
-                    
-                    
+                                        
+                    obj.NumberOfReceivedCurrentValues= obj.ExpectedNumberOfCurrentForecasts; % just for testing
+                    obj.ReceivedAllCurrentForecastsFlag=1;
                     
                     NumberOfBranchColumn=12;
                     obj.NIS.Branch=zeros(NumberofBranches,NumberOfBranchColumn);
@@ -1225,20 +1208,20 @@ classdef PredictiveGridOptimization < handle
                % Finding BusName and its number (heart of the congestion)
                
                if (Congestion.VioDirection(1)=="over")  % since the table is already sorted by time and violation values, for over voltage situations, the last row has the highest violation magnitude
-                   VoltageViolation=Congestion.Violation(end)
-                   BusName=Congestion.BusName(end)
-                   BusNumber=Congestion.BusNumber(end)
+                   VoltageViolation=Congestion.Violation(end);
+                   BusName=Congestion.BusName(end);
+                   BusNumber=Congestion.BusNumber(end);
                else
-                   VoltageViolation=Congestion.Violation(1) % since the table is already sorted by time and violation values, for over voltage situations, the first row has the lowest violation magnitude
-                   BusName=Congestion.BusName(1)
-                   BusNumber=Congestion.BusNumber(1)
+                   VoltageViolation=Congestion.Violation(1); % since the table is already sorted by time and violation values, for over voltage situations, the first row has the lowest violation magnitude
+                   BusName=Congestion.BusName(1);
+                   BusNumber=Congestion.BusNumber(1);
                end
                
                
                % Finding RealPowerMin and RealPowerRequest
                
                Row = find(strcmp(string(obj.NIS.OriginalBusNames(:,1)),BusName)); % finding the Row of the Bus
-               NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3)  % kV
+               NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
 %                VoltageViolation=1000*VoltageViolation*NominalVoltage; % Voltage violation per volt
                
                R=obj.SensitivityMatrixR(BusNumber,:); % Relative sensitivity value corresponding to the BusNumber
@@ -1268,7 +1251,7 @@ classdef PredictiveGridOptimization < handle
 %                Voltage=zeros(length(DeltaV),1);
 %                Voltage(:,:)=1;
                PowerNeed=zeros(1,obj.NumberofBuses);
-               PowerNeed(:,:)=(obj.NIS.Sbase.Value)*1000*sqrt(3).*(DeltaI(1,:)) % Power Need per Watt
+               PowerNeed(:,:)=(obj.NIS.Sbase.Value)*1000*sqrt(3).*(DeltaI(1,:)); % Power Need per Watt
                %
                Rth=obj.SensitivityMatrixR(BusNumber,BusNumber);
                Xth=obj.SensitivityMatrixX(BusNumber,BusNumber);
@@ -1296,12 +1279,12 @@ classdef PredictiveGridOptimization < handle
                PowerNeed(PowerNeed==0)=[];
                [RealPowerMin,RealPowerMinIndex]=min(PowerNeed);  % related to risk policy of DSO
                %RealPowerMinBusName=obj.NIS.OriginalBusNames(RealPowerMinIndex)
-               RealPowerMin=round(RealPowerMin);
+               RealPowerMin=(obj.FNM)*(round(RealPowerMin));        % Applying over purchase, under purchase or nutural bidding strategy
                RealPowerMin=roundn(RealPowerMin,1); %round to the nearest 10
                
                [RealPowerRequest,RealPowerRequestIndex]=max(PowerNeed); % related to risk policy of DSO
                %RealPowerRequestBusName=obj.NIS.OriginalBusNames(RealPowerRequestIndex)
-               RealPowerRequest=round(RealPowerRequest);
+               RealPowerRequest=(obj.FNM)*(round(RealPowerRequest));         % Applying over purchase, under purchase or nutural bidding strategy
                RealPowerRequest=roundn(RealPowerRequest,1); %round to the nearest 10
                if RealPowerRequest==inf
                    RealPowerRequest=RealPowerMin;
@@ -1333,7 +1316,7 @@ classdef PredictiveGridOptimization < handle
                 Rows=find(obj.VoltageForecasts.CongestionNumber==i);
                 obj.FlexNeed(i).ActivationTime=obj.VoltageForecasts.Time(Rows(1));
                 obj.FlexNeed(i).Duration.Value=60; % assuming that flex duration is always 60 Mins
-                obj.FlexNeed(i).Duration.UnitOfMeasure="min";
+                obj.FlexNeed(i).Duration.UnitOfMeasure="Minute";
                 if obj.VoltageForecasts.VioDirection(Rows(1))=="over"
                     obj.FlexNeed(i).Direction="downregulation";
                 else
@@ -1472,6 +1455,7 @@ classdef PredictiveGridOptimization < handle
                 end
             end
             
+            FlexNeedsssss=struct2table(obj.FlexNeed)
             SavedFlexNeed=jsonencode(obj.FlexNeed)
             
             
@@ -1516,7 +1500,7 @@ classdef PredictiveGridOptimization < handle
 
                     MyStringOut = java.lang.String(jsonencode(AbstractResult));
                     MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                    obj.AmqpConnector.sendMessage('FlexibilityNeed', MyBytesOut);
+                    obj.AmqpConnector.sendMessage('FlexibilityNeed.procem-lfmA', MyBytesOut);
                 end
             end
             obj.FlexNeedSentFlag=1;
@@ -1701,7 +1685,7 @@ classdef PredictiveGridOptimization < handle
 
                         if strcmp(obj.InboundMessage.Value,'ready')
                             obj.GridReadinessFlag=1;
-                            if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                            if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)  % If Grid is ready, Then PGO is ready. 
                                     if obj.FlexNeedFlag==0
                                         AbstractResult.Value='ready';
@@ -1723,7 +1707,7 @@ classdef PredictiveGridOptimization < handle
                         end
                         if strcmp(obj.InboundMessage.Value,'ready')
                             obj.GridReadinessFlag=1;
-                            if (obj.ExpectedNumberOfVoltageForecasts~=obj.NumberOfReceivedVoltageValues)
+                            if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                                     AbstractResult.Value='error';
                                     WarningFlag=1;
@@ -1735,7 +1719,7 @@ classdef PredictiveGridOptimization < handle
                         end
                         if (strcmp(obj.InboundMessage.Value,'ready'))
                             obj.GridReadinessFlag=1;
-                            if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                            if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
                                     AbstractResult.Value='error';
                                     WarningFlag=1;
@@ -1747,7 +1731,7 @@ classdef PredictiveGridOptimization < handle
                         end
                         if (strcmp(obj.InboundMessage.Value,'ready'))
                             obj.GridReadinessFlag=1;
-                            if (obj.ExpectedNumberOfVoltageForecasts~=obj.NumberOfReceivedVoltageValues)
+                            if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
                                 if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
                                     AbstractResult.Value='error';
                                     WarningFlag=1;
@@ -1789,7 +1773,7 @@ classdef PredictiveGridOptimization < handle
            ReadyFlag=0;
            %%%
            %if obj.GridReadinessFlag==1
-                if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                     if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                         if obj.FlexNeedFlag==0 % No flex need
                            AbstractResult.Value='ready'; 
@@ -1801,7 +1785,7 @@ classdef PredictiveGridOptimization < handle
            %%%
            if ReadyFlag==0
            %    if obj.GridReadinessFlag==1 
-                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                             if obj.FlexNeedFlag==1 % flex need exist
                                 if obj.FlexNeedTimeFlag==0 % time for bidding has not occured yet
@@ -1816,7 +1800,7 @@ classdef PredictiveGridOptimization < handle
            %%%
            if ReadyFlag==0
                %if obj.GridReadinessFlag==1 
-                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                             if obj.FlexNeedFlag==1 % flex need exist
                                 if obj.FlexNeedTimeFlag==1 % time for bidding has occured
@@ -1833,7 +1817,7 @@ classdef PredictiveGridOptimization < handle
            %%%
            if ReadyFlag==0
                %if obj.GridReadinessFlag==1 
-                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                             if obj.FlexNeedFlag==1 % Flex need exist
                                 if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
@@ -1853,7 +1837,7 @@ classdef PredictiveGridOptimization < handle
            %%% 
            if ReadyFlag==0
                %if obj.GridReadinessFlag==1 
-                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                             if obj.FlexNeedFlag==1 %Flex need exits 
                                 if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
@@ -1876,7 +1860,7 @@ classdef PredictiveGridOptimization < handle
            %%%
            if ReadyFlag==0
                %if obj.GridReadinessFlag==1
-                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                             if obj.FlexNeedFlag==1 %Flex need exits 
                                 if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
@@ -1901,7 +1885,7 @@ classdef PredictiveGridOptimization < handle
            %%%
            if ReadyFlag==0
                %if obj.GridReadinessFlag==1
-                    if (obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues)
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
                             if obj.FlexNeedFlag==1 %Flex need exits 
                                 if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
