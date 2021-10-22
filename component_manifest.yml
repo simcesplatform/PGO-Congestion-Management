@@ -57,6 +57,10 @@ Attributes:
     # is passed as the environment variable name "ATTRIBUTE_VALUE_2"
     RelativeSensitivity:
         Optional: false
+    FlexibilityNeedMargin:
+        Optional: false
+    Horizon:
+        Optional: false
     MaxVoltage:
         Optional: false
     MinVoltage:
@@ -68,4 +72,6 @@ Attributes:
     OverloadingBaseline:
         Optional: false
     AmberLoadingBaseline:
+        Optional: false
+    ParticipatingMarketId:
         Optional: false
