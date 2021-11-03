@@ -7,12 +7,14 @@ classdef PredictiveGridOptimization < handle
         SimulationId
         Grid
         SourceProcessId
+        OptimizationHorizon
         MaxVoltage
         MinVoltage
         UpperAmberBandVoltage
         LowerAmberBandVoltage
         OverloadingBaseline
         AmberLoadingBaseline
+        MarketId
         GR
         GX
         DistancesR
@@ -21,7 +23,6 @@ classdef PredictiveGridOptimization < handle
         % Initialization (Epoch 1)
         NIS
         CIS
-        ForecastLengthVoltage
         ForecastLengthCurrent
         ExpectedNumberOfVoltageForecasts
         ExpectedNumberOfCurrentForecasts
@@ -49,6 +50,7 @@ classdef PredictiveGridOptimization < handle
         NumberOfReceivedCurrentValues
         StartTime
         EndTime
+        x
         
         % Inbbound/outbound message counter
         InboundMessage
@@ -60,7 +62,8 @@ classdef PredictiveGridOptimization < handle
         CurrentForecasts
 
         % Flex need
-        FlexNeed   % Flex need is stored in the "FlexNeed" table
+        FlexNeedDMS    % Flex need on the DMS side is stored in the "FlexNeedDMS" table 
+        FlexNeedMarket % Flex need on the market side is stored in the "FlexNeedMarket" table
         
         % Offer
         OfferCounter % counter of offers received from LFM
@@ -85,9 +88,13 @@ classdef PredictiveGridOptimization < handle
         ReceivedAllCurrentForecastsFlag
         NISBusAnalysisFlag
         NISBranchAnalysisFlag
+        CISAnalysisFlag
         
         % connector to simulation specific exchange (using ProcemPlus lib)
         AmqpConnector  
+        
+        % Result
+        AbstractResult
     end
  
     %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -96,7 +103,7 @@ classdef PredictiveGridOptimization < handle
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Constructor
         
-        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline)  
+        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId)  
             obj.SimulationSpecificExchange = SimulationSpecificExchange; % Start message
             obj.SimulationId = SimulationId;
             obj.SourceProcessId = PGOName;
@@ -104,12 +111,14 @@ classdef PredictiveGridOptimization < handle
             obj.RS=RS;
                 obj.RS=1-((obj.RS)/100);
             obj.FNM=FNM+1;
+            obj.OptimizationHorizon=str2num(OptimizationHorizon(3:end-1)); % Following ISO8601 for duration e.g.: "PT36H"
             obj.MaxVoltage=MaxVoltage; % p.u. value
             obj.MinVoltage=MinVoltage; % p.u. value
             obj.UpperAmberBandVoltage=UpperAmberBandVoltage; % p.u. value
             obj.LowerAmberBandVoltage=LowerAmberBandVoltage; % p.u. value
             obj.OverloadingBaseline=OverloadingBaseline;
             obj.AmberLoadingBaseline=AmberLoadingBaseline; 
+            obj.MarketId=MarketId;
 
             obj.ExpectedNumberOfVoltageForecasts=0;    % Initialization (Epoch 1)
             obj.ExpectedNumberOfVoltageForecasts=0;
@@ -136,40 +145,27 @@ classdef PredictiveGridOptimization < handle
             obj.ReceivedAllCurrentForecastsFlag=0;
             obj.NISBusAnalysisFlag=0;
             obj.NISBranchAnalysisFlag=0;
+            obj.CISAnalysisFlag=0;
             obj.BusNameForTest={};
             obj.BusNodeForTest=0;
 
             obj.State='Free';   % The object's default State is 'Free'
         end
-        
+ 
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 1
-        
-        function OnStateChange(obj,NewState)
-            obj.State=NewState;
-            disp('%%%%%%%%%')
-            disp(['SimulationId:' obj.SimulationId])
-            disp(['Epoch:' num2str(obj.Epoch)])
-            disp(['State:' obj.State])
-            disp('%%%%%%%%%')
-            if strcmp(obj.State,'Free') 
-                obj.Listener;
-            end
-        end
-        
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 2
         
         function Done=Main(obj)
             obj.Subscription;
             obj.ForecastedDataManagement;
-            obj.Listener;
+            obj.GetMsg;
             if strcmp(obj.State,'Stopped')
                 disp("PGO stopped")
-                Done=True;
+                Done=true;
             end
         end
-        
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 3
-        
+
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 2
+
         function Subscription(obj)
 %             AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('localhost',obj.SimulationSpecificExchange,'guest','guest'); % Based on what is specified in the Start message, PGO listens to that exchange.
             AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('amqp.ain.rd.tut.fi',obj.SimulationSpecificExchange,'procem-all','simu09LATION');
@@ -197,145 +193,166 @@ classdef PredictiveGridOptimization < handle
             disp(['SimulationId:' obj.SimulationId])
         end
         
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 3
+        
+        function Out=GetMsg(obj)
+            while 1>0
+                obj.State='Free';
+                message = obj.AmqpConnector.getMessage();
+                if ~isempty(message)
+                    mystr = message.getBody();
+                    str = char(mystr);  %    Making the input into a character array
+                    obj.InboundMessage = jsondecode(str'); % decoding JSON data. please note that jsondecode for Matlab versions 2018 and later receives only row vectors.(that's why str is str')
+                    clear message mystr str
+                    obj.MessageCounterInbound=obj.MessageCounterInbound+1; % inbound message counter
+                    obj.Listener;
+                else
+                    pause(1);   % in order not to over load Matlab
+                end
+                if strcmp(obj.State,'Stopped')
+                   Out=true; 
+                end
+            end
+        end
+        
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 4
         
         function Listener(obj)
             if strcmp(obj.State,'Free')
-                message = obj.AmqpConnector.getMessage();   % Once PGO is idel, it receives the next message package
-                if isempty(message)
-                    pause(2)    % when the content of message is empty, then 2 seconds delay is applied.
-                    obj.OnStateChange(obj.State);
-                else
-                    obj.State='Busy';   % Trun the PGO state to "Busy" to block arrival a new message package
-                    mystr = message.getBody();
-                    str = char(mystr);  %    Making the input into a character array
-                    obj.InboundMessage = jsondecode(str'); % decoding JSON data. please note that jsondecode for Matlab versions 2018 and later receives only row vectors.(that's why str is str')
-                    obj.MessageCounterInbound=obj.MessageCounterInbound+1; % inbound message counter
-                    %disp(['MessageType:' obj.InboundMessage.Type])
-                    %disp(['SimulationId:' obj.InboundMessage.SimulationId])
-                    %ReceivedMessage=obj.InboundMessage
+                obj.State='Busy';
+                if strcmp(obj.SimulationId,obj.InboundMessage.SimulationId) % making sure that incoming message belong to the current simulation run
 
-                    if strcmp(obj.SimulationId,obj.InboundMessage.SimulationId) % making sure that incoming message belong to the current simulation run
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When SimulationManager publishes the SimState message
 
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When SimulationManager publishes the SimState message
+                   if strcmp(obj.InboundMessage.Type,'SimState')
+                        if strcmp(obj.InboundMessage.SimulationState,'running')
+                            obj.AbstractResult.Type='Status';
+                            obj.AbstractResult.SimulationId=obj.SimulationId{1};
+                            obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
+                            obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
+                                s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound)); % Making the number of outbound messages string to create MessageId
+                            obj.AbstractResult.MessageId=s;
+                                t = datetime('now', 'TimeZone', 'UTC');
+                                t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
+                            obj.AbstractResult.Timestamp=t;
+                            obj.AbstractResult.EpochNumber=0;
+                            obj.Epoch=0;         % it sets the Epoch number in the object
+                            obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+                            obj.AbstractResult.Value='ready';  
+                            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                            disp('PGO reported "ready" message to Simulation Manager as response to SimState message')
+                            disp(['SimulationId:' obj.SimulationId])
+                            MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
+                            MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
+                            obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut); % The topic is "Status.Ready" that PGO publishes to
+                               ss = char(strcat('PgoReady.',string(obj.SourceProcessId))) % just for testing
+                            obj.AmqpConnector.sendMessage(ss, MyBytesOut); % The topic is "Status.Ready" that PGO publishes to
+                            clear t s MyStringOut MyBytesOut
+                            obj.AbstractResult=[];
+                        elseif strcmp(obj.InboundMessage.SimulationState,'stopped')
+                            obj.State='Stopped';    % Turn the PGO state to stopped.
+                        end
+                    end
 
-                       if strcmp(obj.InboundMessage.Type,'SimState')
-                            if strcmp(obj.InboundMessage.SimulationState,'running')
-                                AbstractResult.Type='Status';
-                                AbstractResult.SimulationId=obj.SimulationId{1};
-                                AbstractResult.SourceProcessId=obj.SourceProcessId;
-                                obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
-                                    s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound)); % Making the number of outbound messages string to create MessageId
-                                AbstractResult.MessageId=s;
-                                    t = datetime('now', 'TimeZone', 'UTC');
-                                    t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-                                AbstractResult.Timestamp=t;
-                                AbstractResult.EpochNumber=0;
-                                obj.Epoch=0;         % it sets the Epoch number in the object
-                                AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
-                                AbstractResult.Value='ready';  
-                                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                                disp('PGO reported "ready" message to Simulation Manager as response to SimState message')
-                                disp(['SimulationId:' obj.SimulationId])
-                                MyStringOut = java.lang.String(jsonencode(AbstractResult));
-                                MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                                obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut); % The topic is "Status.Ready" that PGO publishes to
-                            elseif strcmp(obj.InboundMessage.SimulationState,'stopped')
-                                obj.State='Stopped';    % Turn the PGO state to stopped.
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes the Status message for Epoches>0
+
+                   if strcmp(obj.InboundMessage.Type,'Status')
+                      if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)      % just analyse the status message that is published by Grid
+                          if obj.InboundMessage.EpochNumber~=0     % For Epoches > 0 
+                              obj.StatusReadinessGrid; % one of the requirements of PGO readiness is grid's readiness
+                          end
+                      end
+                   end
+
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When SimulationManager publishes the Epoch message 
+
+                   if strcmp(obj.InboundMessage.Type,'Epoch')
+                       if obj.InboundMessage.EpochNumber>obj.Epoch
+                            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%') % for visualization purposes
+                            disp(['Epoch number=' num2str(obj.InboundMessage.EpochNumber)])
+                            disp(['Start Time=' obj.InboundMessage.StartTime])
+                            disp(['End Time=' obj.InboundMessage.EndTime])
+                            disp(['SimulationId:' obj.SimulationId])
+                            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                            obj.Epoch=obj.InboundMessage.EpochNumber;              % Making the Epoch number the Object's property
+                            obj.StartTime=char(obj.InboundMessage.StartTime);
+                            obj.EndTime=char(obj.InboundMessage.StartTime);
+                            obj.NumberOfReceivedVoltageValues=0;    % Resetting the number of received forecasted voltage values
+                            obj.NumberOfReceivedCurrentValues=0;    % Resetting the number of received forecasted current values
+                            obj.MessageCounterOutbound=0;   % Resetting the number of outbound message for each Epoch
+                            obj.ForecastLengthCurrent=0; % Resetting the length of the forecasts- current
+                            obj.OfferCounter=0;
+
+                            obj.GridReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
+                            obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 when Epoch starts. The value is 1 when there is a need. The value is 2 there is no flex need.
+                            obj.OfferReceivedFlag=0; % Resetting the available offer flag. The defalut is 0 showing that, currently, there is no available offer in the market
+                            obj.OfferSelectedFlag=0;  % Resetting the offer selected flag. The default is 0 showing that any offer has not yet been selected duting the running Epoch.
+                            obj.FlexNeedTimeFlag=0;  % Resetting the flag. The default is 0 showing that the reght time (depending on when LFM market operates) has not arrived for sending the flexibility need.
+                            obj.OfferSelectionTimeFlag=0; % Resetting the flag. The default is 0 showing that the time for selecting the offers has not occured yet.
+                            obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 showing that No CustomerId exist within a congestion area  
+
+                            x=obj.StartTime(12:13);
+                            obj.x=str2double(x);
+                            clear x
+                            if obj.x==0
+                                obj.Offer=[];       % resetting the offers for a new day.
+                                obj.FlexNeedSentFlag=0;   % Resetting the flex sent flag for the new day.
                             end
-                        end
-                        
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes the Status message for Epoches>0
-                       
-                       if strcmp(obj.InboundMessage.Type,'Status')    
-                           obj.StatusReadinessGrid; % one of the requirements of PGO readiness is grid's readiness
                        end
-                        
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When SimulationManager publishes the Epoch message 
+                    end
 
-                       if strcmp(obj.InboundMessage.Type,'Epoch')
-                           if obj.InboundMessage.EpochNumber>obj.Epoch
-                                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%') % for visualization purposes
-                                disp(['Epoch number=' num2str(obj.InboundMessage.EpochNumber)])
-                                disp(['Start Time=' obj.InboundMessage.StartTime])
-                                disp(['End Time=' obj.InboundMessage.EndTime])
-                                disp(['SimulationId:' obj.SimulationId])
-                                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                                obj.Epoch=obj.InboundMessage.EpochNumber;              % Making the Epoch number the Object's property
-                                obj.StartTime=char(obj.InboundMessage.StartTime);
-                                obj.EndTime=char(obj.InboundMessage.StartTime);
-                                obj.NumberOfReceivedVoltageValues=0;    % Resetting the number of received forecasted voltage values
-                                obj.NumberOfReceivedCurrentValues=0;    % Resetting the number of received forecasted current values
-                                obj.MessageCounterOutbound=0;   % Resetting the number of outbound message for each Epoch
-                                obj.ForecastLengthVoltage=0; % Resetting the length of the forecasts- voltage
-                                obj.ForecastLengthCurrent=0; % Resetting the length of the forecasts- current
-                                obj.OfferCounter=0;
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Bus data message- NIS
 
-                                obj.GridReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
-                                obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 which means there is no flex need unless otherwise discovered.
-                                obj.OfferReceivedFlag=0; % Resetting the available offer flag. The defalut is 0 showing that, currently, there is no available offer in the market
-                                obj.OfferSelectedFlag=0;  % Resetting the offer selected flag. The default is 0 showing that any offer has not yet been selected duting the running Epoch.
-                                obj.FlexNeedTimeFlag=0;  % Resetting the flag. The default is 0 showing that the reght time (depending on when LFM market operates) has not arrived for sending the flexibility need.
-                                obj.OfferSelectionTimeFlag=0; % Resetting the flag. The default is 0 showing that the time for selecting the offers has not occured yet.
-                                obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 showing that No CustomerId exist within a congestion area  
+                   if strcmp(obj.InboundMessage.Type,'Init.NIS.NetworkBusInfo')
+                       if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)
+                           if obj.NISBusAnalysisFlag==0 
+                            obj.NISBusAnalysis;
+                           end
+                       end
+                   end
 
-                                x=obj.StartTime(12:14);
-                                x=str2double(x);
-                                if x==0
-                                    obj.Offer=[];       % resetting the offers for a new day.
-                                    obj.FlexNeedSentFlag=0;   % Resetting the flex sent flag for the new day.
-                                end
-                           end
-                        end
-                        
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Bus data message- NIS
-                    
-                       if strcmp(obj.InboundMessage.Type,'Init.NIS.NetworkBusInfo')
-                           if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)
-                               obj.NISBusAnalysis;
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Branch data message- NIS
+
+                   if strcmp(obj.InboundMessage.Type,'Init.NIS.NetworkComponentInfo')
+                       if (strcmp(obj.InboundMessage.SourceProcessId,obj.Grid))
+                           if obj.NISBranchAnalysisFlag==0
+                            obj.NISBranchAnalysis;
                            end
                        end
-                        
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Branch data message- NIS
-                        
-                       if strcmp(obj.InboundMessage.Type,'Init.NIS.NetworkComponentInfo')
-                           if (strcmp(obj.InboundMessage.SourceProcessId,obj.Grid))
-                               obj.NISBranchAnalysis;
+                   end
+
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Customer data message- CIS
+
+                   if strcmp(obj.InboundMessage.Type,'Init.CIS.CustomerInfo')
+                       if (strcmp(obj.InboundMessage.SourceProcessId,obj.Grid))
+                           if obj.CISAnalysisFlag==0
+                            obj.CISAnalysis;
                            end
                        end
-                            
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Customer data message- CIS
-                    
-                       if strcmp(obj.InboundMessage.Type,'Init.CIS.CustomerInfo')
-                           if (strcmp(obj.InboundMessage.SourceProcessId,obj.Grid))
-                               obj.CISAnalysis;
-                           end
-                       end
-                            
-                            
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's voltage forecasts
-                        
-                       if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Voltage')
+                   end
+
+
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's voltage forecasts
+
+                   if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Voltage')
+                       if obj.x==12
                            if obj.InboundMessage.Node<4
                                VoltageViolationFlag=0;
                                obj.ReceivedAllVoltageForecastsFlag=0;
                                obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
                                ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
-                               A=length(obj.InboundMessage.Forecast.TimeIndex);
-                               if obj.ForecastLengthVoltage>0 % Since the ForecastLengthVoltage is 0 in the beggining of the Epoch, this condition only applies from second voltage value till the last
-                                   if obj.ForecastLengthVoltage~=A
-                                       disp('The forecasts lengths are not stable')
-                                   end
-                               end
-                               obj.ForecastLengthVoltage=A;
-                               From=1+(obj.ForecastLengthVoltage*(obj.NumberOfReceivedVoltageValues-1));
-                               To=obj.NumberOfReceivedVoltageValues*obj.ForecastLengthVoltage;
-                               TempStatus=string(zeros(obj.ForecastLengthVoltage,1));
-                               TempViolation=string(zeros(obj.ForecastLengthVoltage,1));
-                               TempVioDir=string(zeros(obj.ForecastLengthVoltage,1));
+    %                            obj.ForecastLengthVoltage=length(obj.InboundMessage.Forecast.TimeIndex);
+    %                            if obj.OptimizationHorizon~=obj.ForecastLengthVoltage
+    %                                disp('The forecasts lengths are not stable')
+    %                            end
+                               From=1+(obj.OptimizationHorizon*(obj.NumberOfReceivedVoltageValues-1));
+                               To=obj.NumberOfReceivedVoltageValues*obj.OptimizationHorizon;
+                               TempStatus=string(zeros(obj.OptimizationHorizon,1));
+                               TempViolation=string(zeros(obj.OptimizationHorizon,1));
+                               TempVioDir=string(zeros(obj.OptimizationHorizon,1));
 
-%                               BusName=obj.InboundMessage.Bus;
-%                               Node=obj.InboundMessage.Node;
+                               BusName=obj.InboundMessage.Bus;
+                               Node=obj.InboundMessage.Node;
                                Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
                                NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
                                Vmin1=(obj.MinVoltage+obj.LowerAmberBandVoltage)*NominalVoltage;  % kV
@@ -343,9 +360,8 @@ classdef PredictiveGridOptimization < handle
                                Vmin2=obj.MinVoltage*NominalVoltage;  % kV
                                Vmax2=obj.MaxVoltage*NominalVoltage; % kV
                                %Voltages=obj.InboundMessage.Forecast.Series.Magnitude.Values
-
                                %%%%% Voltage level analysis
-                               for i=1:obj.ForecastLengthVoltage
+                               for i=1:obj.OptimizationHorizon
                                    VoltageViolationFlag=0;
                                    if (obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)>Vmax1)
                                        if (obj.InboundMessage.Forecast.Series.Magnitude.Values(i,1)<Vmax2)
@@ -385,201 +401,220 @@ classdef PredictiveGridOptimization < handle
                                    TempVioDir(i,1)=VioDir;
                                end
                                 warning('off')     % this is needed to supress the warning messages in command window. The reason of the warning is that by adding new rows to the VoltageForecast table, some columns still donot have value.
-                                obj.VoltageForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
-                                obj.VoltageForecasts.Voltage(From:To,:)=obj.InboundMessage.Forecast.Series.Magnitude.Values;
+                                obj.VoltageForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex(1:obj.OptimizationHorizon,:);
+                                obj.VoltageForecasts.Voltage(From:To,:)=obj.InboundMessage.Forecast.Series.Magnitude.Values(1:obj.OptimizationHorizon,:);
                                 obj.VoltageForecasts.Violation(From:To,:)=TempViolation;
                                 obj.VoltageForecasts.BusNumber(From:To,:)=Row;
-                                obj.VoltageForecasts.BusName(From:To,:)=obj.InboundMessage.Bus;
-                                obj.VoltageForecasts.Node(From:To,:)=obj.InboundMessage.Node;
-                                obj.VoltageForecasts.Angle(From:To,:)=obj.InboundMessage.Forecast.Series.Angle.Values;
+                                obj.VoltageForecasts.BusName(From:To,:)=BusName;
+                                obj.VoltageForecasts.Node(From:To,:)=Node;
+                                obj.VoltageForecasts.Angle(From:To,:)=obj.InboundMessage.Forecast.Series.Angle.Values(1:obj.OptimizationHorizon,:);
                                 obj.VoltageForecasts.Status(From:To,:)=TempStatus;
                                 obj.VoltageForecasts.VioDirection(From:To,:)=TempVioDir;
                                 obj.VoltageForecasts.CongestionNumber(From:To,:)=0;
-
+                                if ReceivedVoltageValues==1077
+                                    Expected=obj.ExpectedNumberOfVoltageForecasts
+                                    Received=length(obj.VoltageForecasts.Time)
+                                end
+                                clear Row NominalVoltage Vmin1 Vmax1 Vmin2 Vmax2 TempVioDir TempViolation TempStatus From To VoltageViolationFlag ReceivedVoltageValues  
                                 %%%%% Deleting the rows without violation when all the voltage forecasts are received
 
-                                obj.ExpectedNumberOfVoltageForecasts=obj.NumberofBuses*3*obj.ForecastLengthVoltage;  % Bus*Node*length of time series. change the Node value if the network is not three phase
-                                if length(obj.VoltageForecasts.Time)==obj.ExpectedNumberOfVoltageForecasts
+
+                                if obj.NumberOfReceivedVoltageValues==(3*obj.NumberofBuses)
                                     disp('All voltages were received')
-                                    
-                                    obj.ExpectedNumberOfVoltageForecasts==obj.NumberOfReceivedVoltageValues
                                     obj.ReceivedAllVoltageForecastsFlag=1;
-                                    RowWithVio=find(obj.VoltageForecasts.Violation~=0);
-                                    if ~isempty(RowWithVio)
-                                        n=length(RowWithVio);
-                                        for k=1:1:n
-                                            Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
+                                    if obj.x>=12 && obj.x<13
+                                        obj.FlexNeedTimeFlag=1;
+                                        RowWithVio=find(obj.VoltageForecasts.Violation~=0)
+                                        if ~isempty(RowWithVio)
+                                            n=length(RowWithVio);
+                                            for k=1:1:n
+                                                Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
+                                            end
+                                            obj.VoltageForecasts=[];
+                                            obj.VoltageForecasts=Temporary;
+                                            clear Temporary x RowWithVio
+                                            % voltages that donot have violation are deleted
                                         end
-                                    obj.VoltageForecasts=[];
-                                    obj.VoltageForecasts=Temporary;
-                                    clear Temporary
-                                    % buying flex from LFM will be from 00:00 next day to 23:59, therefore, voltage violations of the next day is only considered
-
-                                    x=obj.StartTime;
-                                    type=class(x);
-                                    if strcmp(type,"string")
-                                        x=char(x);
-                                    end
-
-                                    Today=x(1:10);
-                                    Today=datetime(Today,'InputFormat','yyyy-MM-dd');
-
-                                    NextDayStart=dateshift(Today,'start','day','next');     
-                                    NextDayEnd=dateshift(NextDayStart,'start','day','next');
-
-                                    n=length(obj.VoltageForecasts.Time)   % It gives the number of violations
-    %                                 if ~isempty(n)
-    %                                     for i=1:1:n
-    %                                         x=obj.VoltageForecasts.Time(i);
-    %                                         type=class(x);
-    %                                         if strcmp(type,"string")
-    %                                             x=char(x);
-    %                                         end
-    %                                         x=x(1:10);
-    %                                         x=datetime(x,'InputFormat','yyyy-MM-dd');
-    %                                         if x<=NextDayEnd
-    %                                             obj.VoltageForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
-    %                                         end
-    %                                         if x>=NextDayStart
-    %                                             obj.VoltageForecasts(i,:)=[];  % Deleting the rows outsidet the market operation window
-    %                                         end
-    %                                     end
-    %                                 end
-                                    end
-                                    if ~isempty(n)
-                                        obj.FlexNeedFlag=1;
-                                        if  obj.ReceivedAllCurrentForecastsFlag==1 
-                                            disp('Flex is needed- voltage')
-                                            obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
-                                            obj.FlexibilityNeed;
+                                        n=length(obj.VoltageForecasts.Time)   % It gives the number of violations
+                                        x=char(obj.StartTime)
+                                        Today=x(1:10)
+                                        Today=datetime(Today,'InputFormat','yyyy-MM-dd')
+                                        NextDayStart=dateshift(Today,'start','day','next')     
+                                        NextDayEnd=dateshift(NextDayStart,'start','day','next')
+                                        if ~isempty(n)
+                                            for i=1:1:length(obj.VoltageForecasts.Time)
+                                                i=i
+                                                x=obj.VoltageForecasts.Time(i);
+                                                type=class(x);
+                                                if strcmp(type,"string")
+                                                    x=char(x);
+                                                end
+                                                x=x(1:10);
+                                                x=datetime(x,'InputFormat','yyyy-MM-dd');
+                                                if x>NextDayEnd
+                                                    obj.VoltageForecasts.Violation(i,:)=0;  % Deleting the rows outsidet the market operation window
+                                                elseif x<NextDayStart
+                                                    obj.VoltageForecasts.Violation(i,:)=0;  % Deleting the rows outsidet the market operation window
+                                                else
+                                                end
+                                            end
+                                        end
+                                        RowWithVio=find(obj.VoltageForecasts.Violation~=0)
+                                        if ~isempty(RowWithVio)
+                                            n=length(RowWithVio);
+                                            for k=1:1:n
+                                                Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
+                                            end
+                                            obj.VoltageForecasts=[];
+                                            obj.VoltageForecasts=Temporary;
+                                            clear Temporary x RowWithVio
+                                            % buying flex from LFM will be from 00:00 next day to 23:59, therefore, voltage violations of the next day is only considered
+                                        end
+                                        n=length(obj.VoltageForecasts.Time)
+                                        if ~isempty(n)
+                                            obj.FlexNeedFlag=1;
+                                            if  obj.ReceivedAllCurrentForecastsFlag==1 
+                                                disp('Flex is needed- voltage')
+                                                obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
+                                                obj.FlexibilityNeed;
+                                            end
+                                        else
+                                          obj.FlexNeedFlag=2;  % It means that Voltages are received, but there is no flex need
+                                          obj.StatusReadiness;
                                         end
                                     else
-                                      obj.StatusReadiness;
+                                        disp('Market is not open yet')
+    %                                     obj.VoltageForecasts=[];
+                                        obj.FlexNeedTimeFlag=0;
+                                        obj.StatusReadiness;
                                     end
                                 end
                            end
-                        end
+                       else
+                           obj.FlexNeedTimeFlag=0;
+                           obj.StatusReadiness;
+                       end
+                    end
 
-                        
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's current forecasts
-                       
-                       if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Current')
-                           obj.NumberOfReceivedCurrentValues=obj.NumberOfReceivedCurrentValues+1;
-                           disp('Current forecast state is coming')
-                           ReceivedNumberOfCurrent=obj.NumberOfReceivedCurrentValues
-                           obj.ReceivedAllCurrentForecastsFlag=0;
-                           
-                           obj.ForecastLengthCurrent=length(obj.InboundMessage.Forecast.TimeIndex);
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's current forecasts
+
+                   if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Current')
+                       obj.NumberOfReceivedCurrentValues=obj.NumberOfReceivedCurrentValues+1;
+                       disp('Current forecast state is coming')
+                       ReceivedNumberOfCurrent=obj.NumberOfReceivedCurrentValues
+                       obj.ReceivedAllCurrentForecastsFlag=0;
+
+                       obj.ForecastLengthCurrent=length(obj.InboundMessage.Forecast.TimeIndex);
 %                            B=obj.ForecastLengthCurrent
-                           if obj.ForecastLengthCurrent~=obj.ForecastLengthVoltage
-                               disp('The length of forecasted current is not equal to the length of the forecasted voltage');
-                           end
-                           From=1+(obj.ForecastLengthCurrent*(obj.NumberOfReceivedCurrentValues-1));
-                           To=obj.NumberOfReceivedCurrentValues*obj.ForecastLengthCurrent;
-                           TempStatusSendingEnd=string(zeros(obj.ForecastLengthCurrent,1));
-                           TempStatusReceivingEnd=string(zeros(obj.ForecastLengthCurrent,1));
-                           TempViolationSendingEnd=string(zeros(obj.ForecastLengthCurrent,1));
-                           TempViolationReceivingEnd=string(zeros(obj.ForecastLengthCurrent,1));
+                       if obj.ForecastLengthCurrent~=obj.OptimizationHorizon
+                           disp('The length of forecasted current is not equal to the length of the forecasted voltage');
+                       end
+                       From=1+(obj.ForecastLengthCurrent*(obj.NumberOfReceivedCurrentValues-1));
+                       To=obj.NumberOfReceivedCurrentValues*obj.ForecastLengthCurrent;
+                       TempStatusSendingEnd=string(zeros(obj.ForecastLengthCurrent,1));
+                       TempStatusReceivingEnd=string(zeros(obj.ForecastLengthCurrent,1));
+                       TempViolationSendingEnd=string(zeros(obj.ForecastLengthCurrent,1));
+                       TempViolationReceivingEnd=string(zeros(obj.ForecastLengthCurrent,1));
 
-                           Row = find(strcmp(string(obj.NIS.DeviceId(:,1)),string(obj.InboundMessage.DeviceId)));
-                           disp(['DeviceId:' string(obj.InboundMessage.DeviceId)]);
-                           NominalCurrent=obj.NominalCurrent(Row,1);
-                           Imax1=NominalCurrent*obj.AmberLoadingBaseline;
-                           Imax2=NominalCurrent*obj.OverloadingBaseline;
+                       Row = find(strcmp(string(obj.NIS.DeviceId(:,1)),string(obj.InboundMessage.DeviceId)));
+                       disp(['DeviceId:' string(obj.InboundMessage.DeviceId)]);
+                       NominalCurrent=obj.NominalCurrent(Row,1);
+                       Imax1=NominalCurrent*obj.AmberLoadingBaseline;
+                       Imax2=NominalCurrent*obj.OverloadingBaseline;
 
-                           
-                                %%%%% Current level analysis
-                           for i=1:obj.ForecastLengthCurrent
-                               if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)>Imax1)
-                                   if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)<Imax2)
-                                       StatusSendingEnd="close-to-limits";
-                                       ViolationSendingEnd=0;
-                                   end
-                               end
-                               if (obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)>Imax1)
-                                   if (obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)<Imax2)
-                                       StatusReceivingEnd="close-to-limits";
-                                       ViolationReceivingEnd=0;
-                                   end
-                               end
-                               %%
-                               if obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)>Imax2
-                                   StatusSendingEnd="unacceptable";
-                                   ViolationSendingEnd=obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)-Imax2;
-                               end
-                               if obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)>Imax2
-                                   StatusReceivingEnd="unacceptable";
-                                   ViolationReceivingEnd=obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)-Imax2;
-                               end
-                               %%
-                               if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)<Imax1)
-                                   StatusSendingEnd="acceptable";
+
+                            %%%%% Current level analysis
+                       for i=1:obj.ForecastLengthCurrent
+                           if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)>Imax1)
+                               if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)<Imax2)
+                                   StatusSendingEnd="close-to-limits";
                                    ViolationSendingEnd=0;
-                               end 
-                               if (obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)<Imax1)
-                                   StatusReceivingEnd="acceptable";
+                               end
+                           end
+                           if (obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)>Imax1)
+                               if (obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)<Imax2)
+                                   StatusReceivingEnd="close-to-limits";
                                    ViolationReceivingEnd=0;
-                               end 
-                               TempStatusSendingEnd(i,1)=StatusSendingEnd;
-                               TempViolationSendingEnd(i,1)=ViolationSendingEnd;
-                               TempStatusReceivingEnd(i,1)=StatusReceivingEnd;
-                               TempViolationReceivingEnd(i,1)=ViolationReceivingEnd;
+                               end
+                           end
+                           %%
+                           if obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)>Imax2
+                               StatusSendingEnd="unacceptable";
+                               ViolationSendingEnd=obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)-Imax2;
+                           end
+                           if obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)>Imax2
+                               StatusReceivingEnd="unacceptable";
+                               ViolationReceivingEnd=obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)-Imax2;
+                           end
+                           %%
+                           if (obj.InboundMessage.Forecast.Series.MagnitudeSendingEnd.Values(i,1)<Imax1)
+                               StatusSendingEnd="acceptable";
+                               ViolationSendingEnd=0;
+                           end 
+                           if (obj.InboundMessage.Forecast.Series.MagnitudeReceivingEnd.Values(i,1)<Imax1)
+                               StatusReceivingEnd="acceptable";
+                               ViolationReceivingEnd=0;
+                           end 
+                           TempStatusSendingEnd(i,1)=StatusSendingEnd;
+                           TempViolationSendingEnd(i,1)=ViolationSendingEnd;
+                           TempStatusReceivingEnd(i,1)=StatusReceivingEnd;
+                           TempViolationReceivingEnd(i,1)=ViolationReceivingEnd;
 
-                            end
-                            obj.CurrentForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
-                            obj.CurrentForecasts.DeviceId(From:To,:)=obj.InboundMessage.DeviceId;
-                            obj.CurrentForecasts.Phase(From:To,:)=obj.InboundMessage.Phase;
+                        end
+                        obj.CurrentForecasts.Time(From:To,:)=obj.InboundMessage.Forecast.TimeIndex;
+                        obj.CurrentForecasts.DeviceId(From:To,:)=obj.InboundMessage.DeviceId;
+                        obj.CurrentForecasts.Phase(From:To,:)=obj.InboundMessage.Phase;
 %                             obj.CurrentForecasts.MangnitudeSendingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.MangnitudeSendingEnd.Values;
 %                             obj.CurrentForecasts.MangnitudeReceivingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.MangnitudeReceivingEnd.Values;
 %                             obj.CurrentForecasts.AngleSendingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.AngleSendingEnd.Values;
 %                             obj.CurrentForecasts.AngleReceivingEnd(From:To,:)=obj.InboundMessage.Forecast.Series.AngleReceivingEnd.Values;
-                            obj.CurrentForecasts.StatusSendingEnd(From:To,:)=TempStatusSendingEnd;
-                            obj.CurrentForecasts.ViolationSendingEnd(From:To,:)=TempViolationSendingEnd;
-                            obj.CurrentForecasts.StatusReceivingEnd(From:To,:)=TempStatusReceivingEnd;
-                            obj.CurrentForecasts.ViolationReceivingEnd(From:To,:)=TempViolationReceivingEnd;
-                            
-                            % Deleting the rows without violation
-                            
-                            if length(obj.CurrentForecasts.Time)==(obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent)
-                                disp('All current forecasts were received')
-                                ExpectedCurrentValues=obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent
-                                ReceivedCurrentValues=length(obj.CurrentForecasts.Time)
-                                obj.ReceivedAllCurrentForecastsFlag=1;
-                                RowWithoutVioSending=find(obj.CurrentForecasts.ViolationSendingEnd==0);
-                                RowWithoutVioReceiving=find(obj.CurrentForecasts.ViolationReceivingEnd==0);
-                                
-                                A=length(RowWithoutVioSending);
-                                B=length(RowWithoutVioReceiving);
-                                
-                                if A>=B % Assuring that the number of current violations are max
-                                    RowWithoutVio=RowWithoutVioReceiving;
-                                elseif B>A
-                                    RowWithoutVio=RowWithoutVioSending;
+                        obj.CurrentForecasts.StatusSendingEnd(From:To,:)=TempStatusSendingEnd;
+                        obj.CurrentForecasts.ViolationSendingEnd(From:To,:)=TempViolationSendingEnd;
+                        obj.CurrentForecasts.StatusReceivingEnd(From:To,:)=TempStatusReceivingEnd;
+                        obj.CurrentForecasts.ViolationReceivingEnd(From:To,:)=TempViolationReceivingEnd;
+
+                        % Deleting the rows without violation
+
+                        if length(obj.CurrentForecasts.Time)==(obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent)
+                            disp('All current forecasts were received')
+                            ExpectedCurrentValues=obj.ExpectedNumberOfCurrentForecasts*obj.ForecastLengthCurrent
+                            ReceivedCurrentValues=length(obj.CurrentForecasts.Time)
+                            obj.ReceivedAllCurrentForecastsFlag=1;
+                            RowWithoutVioSending=find(obj.CurrentForecasts.ViolationSendingEnd==0);
+                            RowWithoutVioReceiving=find(obj.CurrentForecasts.ViolationReceivingEnd==0);
+
+                            A=length(RowWithoutVioSending);
+                            B=length(RowWithoutVioReceiving);
+
+                            if A>=B % Assuring that the number of current violations are max
+                                RowWithoutVio=RowWithoutVioReceiving;
+                            elseif B>A
+                                RowWithoutVio=RowWithoutVioSending;
+                            end
+
+                            if ~isempty(RowWithoutVio)
+                                n=length(RowWithoutVio);
+                                for k=1:1:n
+                                    obj.CurrentForecasts((RowWithoutVio(k)),:)=[];
+                                    RowWithoutVio=RowWithoutVio(:,1)-1;
                                 end
-                                
-                                if ~isempty(RowWithoutVio)
-                                    n=length(RowWithoutVio);
-                                    for k=1:1:n
-                                        obj.CurrentForecasts((RowWithoutVio(k)),:)=[];
-                                        RowWithoutVio=RowWithoutVio(:,1)-1;
-                                    end
-                                end
+                            end
 
-                                % buying flex from LFM will be from 00:00 next day to 23:59
+                            % buying flex from LFM will be from 00:00 next day to 23:59
 
-                                x=obj.StartTime;
-                                type=class(x);
-                                if strcmp(type,"string")
-                                    x=char(x);
-                                end
+                            x=obj.StartTime;
+                            type=class(x);
+                            if strcmp(type,"string")
+                                x=char(x);
+                            end
 
-                                Today=x(1:10);
-                                Today=datetime(Today,'InputFormat','yyyy-MM-dd');
+                            Today=x(1:10);
+                            Today=datetime(Today,'InputFormat','yyyy-MM-dd');
 
-                                NextDayStart=dateshift(Today,'start','day','next');     
-                                NextDayEnd=dateshift(NextDayStart,'start','day','next');
-                                
-                                n=length(obj.CurrentForecasts.Time)   % It gives the number of violations
+                            NextDayStart=dateshift(Today,'start','day','next');     
+                            NextDayEnd=dateshift(NextDayStart,'start','day','next');
+
+                            n=length(obj.CurrentForecasts.Time)   % It gives the number of violations
 %                                 if ~isempty(n)
 %                                     for i=1:1:n
 %                                         x=obj.CurrentForecasts.Time(i);
@@ -597,21 +632,21 @@ classdef PredictiveGridOptimization < handle
 %                                         end
 %                                     end
 %                                 end
-                                if  obj.ReceivedAllVoltageForecastsFlag==1
-                                    if obj.FlexNeedFlag==1
+                            if  obj.ReceivedAllVoltageForecastsFlag==1
+                                if obj.FlexNeedFlag==1
 %                                         if isempty(n)
 %                                             obj.FlexNeedFlag=0;    % since no congestion exist, flex need is not required at all :)
 %                                             disp('Flex is not needed- current')
 %                                             obj.StatusReadiness;
 %                                         else
-                                            disp('Flex is needed- current')
-                                            obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
-                                            obj.FlexibilityNeed;
+                                        disp('Flex is needed- current')
+                                        obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
+                                        obj.FlexibilityNeed;
 %                                         end
-                                    end
                                 end
-                                
-                                
+                            end
+
+
 %                                 if isempty(obj.CurrentForecasts)
 %                                     obj.FlexNeedFlag=0;    % since no congestion exist, flex need is not required at all :)
 %                                 else
@@ -619,48 +654,37 @@ classdef PredictiveGridOptimization < handle
 %                                     obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
 %                                     obj.FlexibilityNeed;
 %                                 end
-                            end
-                       end
-                       
-                       
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When LFM publishes the available offers of energy communities (ECs)
-        
-                       if strcmp(obj.InboundMessage.Type,'LFMOffering')
-                           obj.LFMOffers;
                         end
-                       
-                    %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-                        
-                    else   % Sending a warning if the inbound message doesnot match the SimulationId- error handling feature
-                        obj.State='Free';
-                        disp("Heloo")
-                        AbstractResult.Type='FlexibilityNeed';
-                        AbstractResult.SimulationId=obj.SimulationId{1};
-                        AbstractResult.SourceProcessId=obj.SourceProcessId;
-                        obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
-                            s = strcat('StateMonitoring',num2str(obj.MessageCounterOutbound));
-                        AbstractResult.MessageId=s;
-                        AbstractResult.EpochNumber=obj.Epoch;
-                        AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+                   end
+
+
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When LFM publishes the available offers of energy communities (ECs)
+
+                   if strcmp(obj.InboundMessage.Type,'LFMOffering')
+                       obj.LFMOffers;
+                    end
+
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+                else   % Sending a warning if the inbound message doesnot match the SimulationId- error handling feature
+                    obj.State='Free';
+                    obj.AbstractResult.Type='FlexibilityNeed';
+                    obj.AbstractResult.SimulationId=obj.SimulationId{1};
+                    obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
+                    obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
+                        s = strcat('StateMonitoring',num2str(obj.MessageCounterOutbound));
+                    obj.AbstractResult.MessageId=s;
+                    obj.AbstractResult.EpochNumber=obj.Epoch;
+                    obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
                         t = datetime('now', 'TimeZone', 'UTC');
                         t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-                        AbstractResult.Timestamp=t;
-                        AbstractResult.Warnings='warning.input';
-                        MyStringOut = java.lang.String(jsonencode(AbstractResult));
-                        MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                        obj.AmqpConnector.sendMessage('DMSNetworkStatus', MyBytesOut);
-                    end
-                    
-                    %%%%%
-                    
-                    if strcmp(obj.State,'Stopped')
-                        obj.AmqpConnector.close;
-                        disp(['Simulation with simulationId "' obj.SimulationId '" was stopped'])
-                        disp(['Epoch number:' num2str(obj.Epoch)])
-                    else
-                        obj.State='Free';
-                        obj.OnStateChange(obj.State);
-                    end
+                    obj.AbstractResult.Timestamp=t;
+                    obj.AbstractResult.Warnings='warning.input';
+                    MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
+                    MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
+                    obj.AmqpConnector.sendMessage('DMSNetworkStatus', MyBytesOut);
+                    clear s t MyStringOut MyBytesOut
+                    obj.AbstractResult=[];
                 end
             end
         end
@@ -668,223 +692,217 @@ classdef PredictiveGridOptimization < handle
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 5
         
         function NISBusAnalysis(obj)
-            if obj.NISBusAnalysisFlag==0
-                obj.State='Busy'; % The NIS structure is inspired by Power System Toolbox format. Please refer to that to know how data are organized in Bus and Branch matrixes.  
-                obj.NumberofBuses=numel(obj.InboundMessage.BusName);
-                NumofBuses=obj.NumberofBuses
-                obj.ExpectedNumberOfVoltageForecasts=(obj.NumberofBuses)*3;
-                NumberofBusColumn=14;
-                obj.NIS.BusUnits=cell(obj.NumberofBuses,NumberofBusColumn); 
-                obj.NIS.OriginalBusNames=cell(obj.NumberofBuses,1);
+            obj.State='Busy'; % The NIS structure is inspired by Power System Toolbox format. Please refer to that to know how data are organized in Bus and Branch matrixes.  
+            obj.NumberofBuses=numel(obj.InboundMessage.BusName);
+            obj.ExpectedNumberOfVoltageForecasts=obj.NumberofBuses*3*obj.OptimizationHorizon;  % Bus*Node*length of time series. change the Node value if the network is not three phase
+            NumberofBusColumn=14;
+            obj.NIS.BusUnits=cell(obj.NumberofBuses,NumberofBusColumn); 
+            obj.NIS.OriginalBusNames=cell(obj.NumberofBuses,1);
 
-                %%%%% Bus name and Number
+            %%%%% Bus name and Number
 
-                RootBusRow=find(strcmp(obj.InboundMessage.BusType(:,1),"root"));
-                if RootBusRow>1    % bring the root bus to row number 1 
-                    obj.InboundMessage.BusType([1 RootBusRow],1)=obj.InboundMessage.BusType([RootBusRow 1],1);
-                    obj.InboundMessage.BusName([1 RootBusRow],1)=obj.InboundMessage.BusName([RootBusRow 1],1);
-                    obj.InboundMessage.BusVoltageBase.Values([1 RootBusRow],1)=obj.InboundMessage.BusVoltageBase.Values([RootBusRow 1],1);
+            RootBusRow=find(strcmp(obj.InboundMessage.BusType(:,1),"root"));
+            if RootBusRow>1    % bring the root bus to row number 1 
+                obj.InboundMessage.BusType([1 RootBusRow],1)=obj.InboundMessage.BusType([RootBusRow 1],1);
+                obj.InboundMessage.BusName([1 RootBusRow],1)=obj.InboundMessage.BusName([RootBusRow 1],1);
+                obj.InboundMessage.BusVoltageBase.Values([1 RootBusRow],1)=obj.InboundMessage.BusVoltageBase.Values([RootBusRow 1],1);
+            end
+            obj.NIS.OriginalBusNames=cellstr(obj.InboundMessage.BusName);
+            obj.NIS.Bus(:,1)=(1:length(obj.InboundMessage.BusName));
+
+            %%%%% Bus Type
+
+            for i=1:1:obj.NumberofBuses   % Enumeration
+                if strcmp(string(obj.InboundMessage.BusType(i,1)),"root")
+                    obj.InboundMessage.BusType(i,1)=cellstr('3');
+                elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"dummy")
+                    obj.InboundMessage.BusType(i,1)=cellstr('1');
+                elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"usage-point")
+                    obj.InboundMessage.BusType(i,1)=cellstr('1');
                 end
-                obj.NIS.OriginalBusNames=cellstr(obj.InboundMessage.BusName);
-                BusNames=obj.NIS.OriginalBusNames;
-                obj.NIS.Bus(:,1)=(1:length(obj.InboundMessage.BusName));
+            end
 
-                %%%%% Bus Type
+            obj.NIS.Bus(:,2)=str2double(obj.InboundMessage.BusType);
 
-                for i=1:1:obj.NumberofBuses   % Enumeration
-                    if strcmp(string(obj.InboundMessage.BusType(i,1)),"root")
-                        obj.InboundMessage.BusType(i,1)=cellstr('3');
-                    elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"dummy")
-                        obj.InboundMessage.BusType(i,1)=cellstr('1');
-                    elseif strcmp(string(obj.InboundMessage.BusType(i,1)),"usage-point")
-                        obj.InboundMessage.BusType(i,1)=cellstr('1');
-                    end
-                end
+             %%%%% Unit of measure
 
-                obj.NIS.Bus(:,2)=str2double(obj.InboundMessage.BusType);
+            if strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'kV')
+                obj.NIS.BusUnits(:,10)=cellstr('kV');
+                elseif strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'V')
+                    obj.NIS.BusUnits(:,10)=cellstr('V');
+            end
 
-                 %%%%% Unit of measure
+            %%%%% Bus voltage base
 
-                if strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'kV')
-                    obj.NIS.BusUnits(:,10)=cellstr('kV');
-                    elseif strcmp(obj.InboundMessage.BusVoltageBase.UnitOfMeasure,'V')
-                        obj.NIS.BusUnits(:,10)=cellstr('V');
-                end
+            obj.NIS.Bus(:,10)=obj.InboundMessage.BusVoltageBase.Values; % kV values
 
-                %%%%% Bus voltage base
+            %%%%% Voltage min and max
 
-                obj.NIS.Bus(:,10)=obj.InboundMessage.BusVoltageBase.Values; % kV values
-
-                %%%%% Voltage min and max
-
-                obj.NIS.Bus(:,12)=obj.MinVoltage; % p.u. values
-                obj.NIS.Bus(:,13)=obj.MaxVoltage; % p.u. values
-                disp('Network initialization of the Bus matrix was done')
-                obj.NISBusAnalysisFlag=1;
-                disp(['SimulationId:' obj.SimulationId])
-                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                obj.NISBusFlag=1;
-                if obj.NISBranchFlag==1 % Assuring that first obj.NIS.Bus is created and after that obj.NIS.Branch is created 
-                    obj.NISBranchAnalysis;
-                else
-                    obj.State='Free';
-                    obj.StatusReadiness;
-                end
+            obj.NIS.Bus(:,12)=obj.MinVoltage; % p.u. values
+            obj.NIS.Bus(:,13)=obj.MaxVoltage; % p.u. values
+            disp('Network initialization of the Bus matrix was done')
+            obj.NISBusAnalysisFlag=1;
+            disp(['SimulationId:' obj.SimulationId])
+            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+            obj.NISBusFlag=1;
+            if obj.NISBranchFlag==1 % Assuring that first obj.NIS.Bus is created and after that obj.NIS.Branch is created 
+                obj.NISBranchAnalysis;
+            else
+                obj.State='Free';
+                obj.StatusReadiness;
             end
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 6        
         
         function NISBranchAnalysis(obj)
-            if obj.NISBranchAnalysisFlag==0
-                obj.State='Busy';
-                if obj.NISBusFlag==1
-                   if obj.NISBranchFlag==1 % It means that NIS.NetworkBusInfo message has arrived earlier than NIS.NetworkBusInfo message
-                       obj.InboundMessage=obj.NISBranchData;
-                   end
-                    obj.NIS.Sbase.Value=obj.InboundMessage.PowerBase.Value;
-                    obj.NIS.Sbase.UnitofMeasure=obj.InboundMessage.PowerBase.UnitOfMeasure;
-                    NumberofBranches=length(obj.InboundMessage.SendingEndBus)
-                    if NumberofBranches~=obj.NumberofBuses-1
-                       disp("The distribution network is not radial") 
-                    end
-                    obj.ExpectedNumberOfCurrentForecasts=NumberofBranches*3;
-                                        
-                    obj.NumberOfReceivedCurrentValues= obj.ExpectedNumberOfCurrentForecasts; % just for testing
-                    obj.ReceivedAllCurrentForecastsFlag=1;
-                    
-                    NumberOfBranchColumn=12;
-                    obj.NIS.Branch=zeros(NumberofBranches,NumberOfBranchColumn);
-                    obj.NIS.BranchUnits=cell(NumberofBranches,NumberOfBranchColumn);
-                    obj.NIS.DeviceId=cell(NumberofBranches,1);
-                    obj.NIS.OriginalNameofSendingEndBus=cell(NumberofBranches,1);
-                    obj.NIS.OriginalNameofReceivingEndBus=cell(NumberofBranches,1);
-
-                    SourceBusName=obj.NIS.OriginalBusNames(1);
-                    RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName));
-                    if RootBusRow>1 % Assuring that the first line of the NIS.NetworkComponenetInfo starts with root bus (the change is needed because sensitivity analysis assumes that the first row contains the root bus)
-                        obj.InboundMessage.DeviceId([1 RootBusRow],1)=obj.InboundMessage.DeviceId([RootBusRow 1],1);
-                        obj.InboundMessage.SendingEndBus([1 RootBusRow],1)=obj.InboundMessage.SendingEndBus([RootBusRow 1],1);
-                        obj.InboundMessage.ReceivingEndBus([1 RootBusRow],1)=obj.InboundMessage.ReceivingEndBus([RootBusRow 1],1);
-                        obj.InboundMessage.Resistance.Values([1 RootBusRow],1)=obj.InboundMessage.Resistance.Values([RootBusRow 1],1);
-                        obj.InboundMessage.Reactance.Values([1 RootBusRow],1)=obj.InboundMessage.Reactance.Values([RootBusRow 1],1);
-                        obj.InboundMessage.ShuntAdmittance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntAdmittance.Values([RootBusRow 1],1);
-                        obj.InboundMessage.ShuntConductance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntConductance.Values([RootBusRow 1],1);
-                        obj.InboundMessage.RatedCurrent.Values([1 RootBusRow],1)=obj.InboundMessage.RatedCurrent.Values([RootBusRow 1],1);
-                    end
-                    obj.NIS.OriginalNameofSendingEndBus=cellstr(obj.InboundMessage.SendingEndBus);
-                    obj.NIS.OriginalNameofReceivingEndBus=cellstr(obj.InboundMessage.ReceivingEndBus);
-                    %%%%% 
-
-                    for i=1:NumberofBranches  % since buses are named when NetworkBusInfo is arrived, then the same bus names for branches are used.
-                        A=string(obj.NIS.OriginalNameofSendingEndBus(i,1));
-                        row=find(strcmp(string(obj.NIS.OriginalBusNames),A)); % function "find" only acts on string arrays
-                        obj.NIS.Branch(i,1)=row;
-                        B=string(obj.NIS.OriginalNameofReceivingEndBus(i,1));
-                        row=find(strcmp(string(obj.NIS.OriginalBusNames),B));
-                        obj.NIS.Branch(i,2)=row;
-                    end
-
-                    obj.NIS.Branch(:,3)=obj.InboundMessage.Resistance.Values;
-                    obj.NIS.BranchUnits(:,3)=cellstr(obj.InboundMessage.Resistance.UnitOfMeasure);
-
-                    obj.NIS.Branch(:,4)=obj.InboundMessage.Reactance.Values;
-                    obj.NIS.BranchUnits(:,4)=cellstr(obj.InboundMessage.Reactance.UnitOfMeasure);
-
-                    obj.NIS.Branch(:,5)=obj.InboundMessage.ShuntAdmittance.Values;
-                    obj.NIS.BranchUnits(:,5)=cellstr(obj.InboundMessage.ShuntAdmittance.UnitOfMeasure);
-
-                    obj.NIS.Branch(:,6)=obj.InboundMessage.ShuntConductance.Values;
-                    obj.NIS.BranchUnits(:,6)=cellstr(obj.InboundMessage.ShuntConductance.UnitOfMeasure);
-
-                    obj.NIS.Branch(:,12)=obj.InboundMessage.RatedCurrent.Values;
-                    obj.NIS.BranchUnits(:,12)=cellstr(obj.InboundMessage.RatedCurrent.UnitOfMeasure);
-                    obj.NIS.DeviceId=cellstr(obj.InboundMessage.DeviceId);
-
-                    %%%%% Calculation of the base values of current and impedance
-
-                    Ibase=zeros(NumberofBranches,1);
-                    obj.NominalCurrent=zeros(NumberofBranches,1);
-                    Zbase=zeros(NumberofBranches,1);
-                    obj.BranchResistance=zeros(NumberofBranches,1);
-
-                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
-                        if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
-                            for i=1:1:NumberofBranches
-                                Ibase(i,1)=1000*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); %Ibase
-                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
-                                Zbase(i,1)=obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)); %Zbase
-                                obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
-                                obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
-                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
-                            end
-                        end
-                    end
-                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
-                        if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
-                             for i=1:1:NumberofBranches
-                                Ibase(i,1)=0.001*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); % Ibase
-                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12); % Ibase*ReatedCurrent
-                                Zbase(i,1)=1000*(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1))); %Zbase
-                                obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
-                                obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
-                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
-                             end
-                        end
-                    end
-                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
-                        if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
-                            for i=1:1:NumberofBranches
-                                Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10)));  % Ibase
-                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
-                                Zbase(i,1)=(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)));
-                                obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
-                                obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
-                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
-                            end
-                        end
-                    end
-                    if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
-                        if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
-                            for i=1:1:NumberofBranches % Sbase="kV.A", Vbase="kV"
-                                SendingEndBusName=obj.InboundMessage.SendingEndBus(i);
-                                BusNumber=find(strcmp(obj.NIS.OriginalBusNames,SendingEndBusName));
-                                obj.Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(BusNumber,10)));  % Ibase(A)=Sbase/sqrt(3)*BusVoltageBase
-                                obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);  % NominalCurrent(A)=Ibase(A)*RatedCurrent(p.u.)
-                                obj.Zbase(i,1)=1000*(obj.NIS.Bus(BusNumber,10)/(sqrt(3)*Ibase(i,1))); %Zbase=1000(BusVoltageBase(kV)/sqrt(3)*Ibase(A))
-                                %obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3); % Branch resistance in Ohm
-                                obj.BranchResistance(i,1)=obj.NIS.Branch(i,3); % Branch resistance in p.u.                           
-                                obj.BranchReactance(i,1)=obj.NIS.Branch(i,4); % Branch reactance in p.u.
-                                obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
-                            end
-                        end
-                    end
-                    format long
-                    Branchresistancepu=obj.BranchResistance(:,1);
-                    BranchReactance=obj.BranchReactance(:,1);
-                    From=obj.NIS.OriginalNameofSendingEndBus(:,1);
-                    To=obj.NIS.OriginalNameofReceivingEndBus(:,1);
-    %                 Zbase=Zbase
-
-    %                BranchResistancepu=obj.NIS.Branch(:,3)
-    %                 FromBus=obj.NIS.OriginalNameofSendingEndBus
-    %                 ToBus=obj.NIS.OriginalNameofReceivingEndBus
-    %                BranchResistanceohm=obj.BranchResistance
-
-
-                    clear NumberofBranches NumberOfBranchColumn    % Freeing up memory
-
-
-                    disp('Network initialization of the Branch matrix was done')
-                    obj.NISBranchAnalysisFlag=1;
-                    disp(['SimulationId:' obj.SimulationId])
-                    disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                    obj.SensitivityAnalysis
-               else
-                   obj.NISBranchData=obj.InboundMessage;
-                   obj.NISBranchFlag=1;
-                   disp('NIS.NetworkBusInfo was received earlier than NIS.NetworkBusInfo')
+            obj.State='Busy';
+            if obj.NISBusFlag==1
+               if obj.NISBranchFlag==1 % It means that NIS.NetworkBusInfo message has arrived earlier than NIS.NetworkBusInfo message
+                   obj.InboundMessage=obj.NISBranchData;
+               end
+                obj.NIS.Sbase.Value=obj.InboundMessage.PowerBase.Value;
+                obj.NIS.Sbase.UnitofMeasure=obj.InboundMessage.PowerBase.UnitOfMeasure;
+                NumberofBranches=length(obj.InboundMessage.SendingEndBus);
+                if NumberofBranches~=obj.NumberofBuses-1
+                   disp("The distribution network is not radial") 
                 end
+                obj.ExpectedNumberOfCurrentForecasts=NumberofBranches*3;
+
+                obj.NumberOfReceivedCurrentValues= obj.ExpectedNumberOfCurrentForecasts; % just for testing since now PGO donot listen to current forecasts
+                obj.ReceivedAllCurrentForecastsFlag=1;
+
+                NumberOfBranchColumn=12;
+                obj.NIS.Branch=zeros(NumberofBranches,NumberOfBranchColumn);
+                obj.NIS.BranchUnits=cell(NumberofBranches,NumberOfBranchColumn);
+                obj.NIS.DeviceId=cell(NumberofBranches,1);
+                obj.NIS.OriginalNameofSendingEndBus=cell(NumberofBranches,1);
+                obj.NIS.OriginalNameofReceivingEndBus=cell(NumberofBranches,1);
+
+                SourceBusName=obj.NIS.OriginalBusNames(1);
+                RootBusRow=find(string(obj.InboundMessage.SendingEndBus(:))==string(SourceBusName));
+                if RootBusRow>1 % Assuring that the first line of the NIS.NetworkComponenetInfo starts with root bus (the change is needed because sensitivity analysis assumes that the first row contains the root bus)
+                    obj.InboundMessage.DeviceId([1 RootBusRow],1)=obj.InboundMessage.DeviceId([RootBusRow 1],1);
+                    obj.InboundMessage.SendingEndBus([1 RootBusRow],1)=obj.InboundMessage.SendingEndBus([RootBusRow 1],1);
+                    obj.InboundMessage.ReceivingEndBus([1 RootBusRow],1)=obj.InboundMessage.ReceivingEndBus([RootBusRow 1],1);
+                    obj.InboundMessage.Resistance.Values([1 RootBusRow],1)=obj.InboundMessage.Resistance.Values([RootBusRow 1],1);
+                    obj.InboundMessage.Reactance.Values([1 RootBusRow],1)=obj.InboundMessage.Reactance.Values([RootBusRow 1],1);
+                    obj.InboundMessage.ShuntAdmittance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntAdmittance.Values([RootBusRow 1],1);
+                    obj.InboundMessage.ShuntConductance.Values([1 RootBusRow],1)=obj.InboundMessage.ShuntConductance.Values([RootBusRow 1],1);
+                    obj.InboundMessage.RatedCurrent.Values([1 RootBusRow],1)=obj.InboundMessage.RatedCurrent.Values([RootBusRow 1],1);
+                end
+                obj.NIS.OriginalNameofSendingEndBus=cellstr(obj.InboundMessage.SendingEndBus);
+                obj.NIS.OriginalNameofReceivingEndBus=cellstr(obj.InboundMessage.ReceivingEndBus);
+                %%%%% 
+
+                for i=1:NumberofBranches  % since buses are named when NetworkBusInfo is arrived, then the same bus names for branches are used.
+                    A=string(obj.NIS.OriginalNameofSendingEndBus(i,1));
+                    row=find(strcmp(string(obj.NIS.OriginalBusNames),A)); % function "find" only acts on string arrays
+                    obj.NIS.Branch(i,1)=row;
+                    B=string(obj.NIS.OriginalNameofReceivingEndBus(i,1));
+                    row=find(strcmp(string(obj.NIS.OriginalBusNames),B));
+                    obj.NIS.Branch(i,2)=row;
+                end
+
+                obj.NIS.Branch(:,3)=obj.InboundMessage.Resistance.Values;
+                obj.NIS.BranchUnits(:,3)=cellstr(obj.InboundMessage.Resistance.UnitOfMeasure);
+
+                obj.NIS.Branch(:,4)=obj.InboundMessage.Reactance.Values;
+                obj.NIS.BranchUnits(:,4)=cellstr(obj.InboundMessage.Reactance.UnitOfMeasure);
+
+                obj.NIS.Branch(:,5)=obj.InboundMessage.ShuntAdmittance.Values;
+                obj.NIS.BranchUnits(:,5)=cellstr(obj.InboundMessage.ShuntAdmittance.UnitOfMeasure);
+
+                obj.NIS.Branch(:,6)=obj.InboundMessage.ShuntConductance.Values;
+                obj.NIS.BranchUnits(:,6)=cellstr(obj.InboundMessage.ShuntConductance.UnitOfMeasure);
+
+                obj.NIS.Branch(:,12)=obj.InboundMessage.RatedCurrent.Values;
+                obj.NIS.BranchUnits(:,12)=cellstr(obj.InboundMessage.RatedCurrent.UnitOfMeasure);
+                obj.NIS.DeviceId=cellstr(obj.InboundMessage.DeviceId);
+
+                %%%%% Calculation of the base values of current and impedance
+
+                Ibase=zeros(NumberofBranches,1);
+                obj.NominalCurrent=zeros(NumberofBranches,1);
+                Zbase=zeros(NumberofBranches,1);
+                obj.BranchResistance=zeros(NumberofBranches,1);
+
+                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
+                    if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
+                        for i=1:1:NumberofBranches
+                            Ibase(i,1)=1000*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); %Ibase
+                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
+                            Zbase(i,1)=obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)); %Zbase
+                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
+                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                        end
+                    end
+                end
+                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
+                    if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
+                         for i=1:1:NumberofBranches
+                            Ibase(i,1)=0.001*(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10))); % Ibase
+                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12); % Ibase*ReatedCurrent
+                            Zbase(i,1)=1000*(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1))); %Zbase
+                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
+                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                         end
+                    end
+                end
+                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'V.A')
+                    if strcmp(string(obj.NIS.BusUnits(1,10)),'V')
+                        for i=1:1:NumberofBranches
+                            Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(i,10)));  % Ibase
+                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);
+                            Zbase(i,1)=(obj.NIS.Bus(i,10)/(sqrt(3)*Ibase(i,1)));
+                            obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3);
+                            obj.BranchReactance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,4); % Branch reactance in Ohm
+                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                        end
+                    end
+                end
+                if strcmp(string(obj.NIS.Sbase.UnitofMeasure),'kV.A')
+                    if strcmp(string(obj.NIS.BusUnits(1,10)),'kV')
+                        for i=1:1:NumberofBranches % Sbase="kV.A", Vbase="kV"
+                            SendingEndBusName=obj.InboundMessage.SendingEndBus(i);
+                            BusNumber=find(strcmp(obj.NIS.OriginalBusNames,SendingEndBusName));
+                            obj.Ibase(i,1)=(obj.NIS.Sbase.Value/(sqrt(3)*obj.NIS.Bus(BusNumber,10)));  % Ibase(A)=Sbase/sqrt(3)*BusVoltageBase
+                            obj.NominalCurrent(i,1)=Ibase(i,1)*obj.NIS.Branch(i,12);  % NominalCurrent(A)=Ibase(A)*RatedCurrent(p.u.)
+                            obj.Zbase(i,1)=1000*(obj.NIS.Bus(BusNumber,10)/(sqrt(3)*Ibase(i,1))); %Zbase=1000(BusVoltageBase(kV)/sqrt(3)*Ibase(A))
+                            %obj.BranchResistance(i,1)=Zbase(i,1)*obj.NIS.Branch(i,3); % Branch resistance in Ohm
+                            obj.BranchResistance(i,1)=obj.NIS.Branch(i,3); % Branch resistance in p.u.                           
+                            obj.BranchReactance(i,1)=obj.NIS.Branch(i,4); % Branch reactance in p.u.
+                            obj.Susceptance(i,1)=(1./Zbase(i,1))*obj.NIS.Branch(i,4); % Susceptance in ohm
+                        end
+                    end
+                end
+                format long
+%                 Branchresistancepu=obj.BranchResistance(:,1);
+%                 BranchReactance=obj.BranchReactance(:,1);
+%                 From=obj.NIS.OriginalNameofSendingEndBus(:,1);
+%                 To=obj.NIS.OriginalNameofReceivingEndBus(:,1);
+%                 Zbase=Zbase
+
+%                BranchResistancepu=obj.NIS.Branch(:,3)
+%                 FromBus=obj.NIS.OriginalNameofSendingEndBus
+%                 ToBus=obj.NIS.OriginalNameofReceivingEndBus
+%                BranchResistanceohm=obj.BranchResistance
+
+
+                clear NumberofBranches NumberOfBranchColumn Ibase Zbase     % Freeing up memory
+
+
+                disp('Network initialization of the Branch matrix was done')
+                obj.NISBranchAnalysisFlag=1;
+                disp(['SimulationId:' obj.SimulationId])
+                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                obj.SensitivityAnalysis
+           else
+               obj.NISBranchData=obj.InboundMessage;
+               obj.NISBranchFlag=1;
+               disp('NIS.NetworkBusInfo was received earlier than NIS.NetworkBusInfo')
             end
         end
         
@@ -897,6 +915,7 @@ classdef PredictiveGridOptimization < handle
             EdgeWeightsX=obj.BranchReactance;
             obj.GR=graph(SourceNode,TargetNode,EdgeWeightsR);
             obj.GX=graph(SourceNode,TargetNode,EdgeWeightsX);
+            clear SourceNode TargetNode EdgeWeightsR EdgeWeightsX
             SensitivityMatrixR=zeros(obj.NumberofBuses,obj.NumberofBuses);
             SensitivityMatrixX=zeros(obj.NumberofBuses,obj.NumberofBuses);
 %             h=plot(obj.GR);
@@ -945,7 +964,6 @@ classdef PredictiveGridOptimization < handle
                         end
                     SensitivityMatrixR(aa,j)=CommonResistance;
                     SensitivityMatrixX(aa,j)=CommonReactance*i;
-                    clear CommonNodes CommonResistance CommonReactance DistR DistX
                     end
                 end
             end
@@ -970,11 +988,9 @@ classdef PredictiveGridOptimization < handle
                 Zth=abs(Rth(www,1)+Xth(www,1));
                 ZthTotal(www,1)= Zth;
             end
-            Rth=Rth
-            Xth=Xth
-            ZthTotal=ZthTotal
             obj.SensitivityMatrixZ=ZthTotal;
-            
+            clear Rth Xth ZthTotal SensitivityMatrixR SensitivityMatrixX TransR TransX a b r x
+            clear CommonNodes CommonResistance CommonReactance DistR DistX ShortPathR
             disp('sensitivity analysis was done')
             disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
             obj.State='Free';
@@ -988,12 +1004,11 @@ classdef PredictiveGridOptimization < handle
             obj.CIS.ResourceId=obj.InboundMessage.ResourceId;
             obj.CIS.CustomerId=obj.InboundMessage.CustomerId;
             obj.CIS.BusName=obj.InboundMessage.BusName;
-            NumBusNames=length(obj.CIS.BusName)
             
-
             disp('Initialization of the Customer Information system was done')
             disp(['SimulationId:' obj.SimulationId])
-            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%') 
+            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+            obj.CISAnalysisFlag=1;
             obj.State='Free';
             obj.StatusReadiness;
         end
@@ -1103,14 +1118,9 @@ classdef PredictiveGridOptimization < handle
            %Temporary=obj.VoltageForecasts
             %%%%% numbering of the violations based on Time + VioDirection+ Congestion zone
             
-            CNumber=max(obj.VoltageForecasts.CongestionNumber);
+            CNumber=max(obj.VoltageForecasts.CongestionNumber)
             Counter=0;
             i=1;
-            if obj.RS>0.9
-                MinCongestionZone=0.1; % This is needed to avoid having too many zongestion areas
-            else
-                MinCongestionZone=0;
-            end
             while i<=CNumber
                 if Counter>0
                     Counter=Counter-1;
@@ -1132,7 +1142,7 @@ classdef PredictiveGridOptimization < handle
                    end
 
                    for k=1:1:obj.NumberofBuses  % Determining buses that has impact on congestion area
-                       if RS(k,1)<(obj.RS-MinCongestionZone)
+                       if RS(k,1)<obj.RS
                            RS(k,1)=0; % outside the congestion zone
                        else
                            RS(k,1)=1; % inside the congestion zone
@@ -1160,7 +1170,7 @@ classdef PredictiveGridOptimization < handle
                             RS(k,1)=obj.SensitivityMatrixR(k,BusNumber)/obj.SensitivityMatrixR(BusNumber,BusNumber);
                         end
                         for k=1:1:obj.NumberofBuses  % Determining buses that has impact on congestion area
-                           if RS(k,1)<(obj.RS-MinCongestionZone)
+                           if RS(k,1)<obj.RS
                                RS(k,1)=0; % outside the congestion zone
                            else
                                RS(k,1)=1; % inside the congestion zone
@@ -1279,12 +1289,12 @@ classdef PredictiveGridOptimization < handle
                PowerNeed(PowerNeed==0)=[];
                [RealPowerMin,RealPowerMinIndex]=min(PowerNeed);  % related to risk policy of DSO
                %RealPowerMinBusName=obj.NIS.OriginalBusNames(RealPowerMinIndex)
-               RealPowerMin=(obj.FNM)*(round(RealPowerMin));        % Applying over purchase, under purchase or nutural bidding strategy
+               RealPowerMin=round(RealPowerMin);        % Applying over purchase, under purchase or nutural bidding strategy
                RealPowerMin=roundn(RealPowerMin,1); %round to the nearest 10
                
                [RealPowerRequest,RealPowerRequestIndex]=max(PowerNeed); % related to risk policy of DSO
                %RealPowerRequestBusName=obj.NIS.OriginalBusNames(RealPowerRequestIndex)
-               RealPowerRequest=(obj.FNM)*(round(RealPowerRequest));         % Applying over purchase, under purchase or nutural bidding strategy
+               RealPowerRequest=round(RealPowerRequest);         % Applying over purchase, under purchase or nutural bidding strategy
                RealPowerRequest=roundn(RealPowerRequest,1); %round to the nearest 10
                if RealPowerRequest==inf
                    RealPowerRequest=RealPowerMin;
@@ -1299,10 +1309,10 @@ classdef PredictiveGridOptimization < handle
                Counter=0;
                
                %%%%% 2- CustomerIds
-               
+               ss=obj.CIS.BusName;
                for k=1:1:length(Column)
                     BusNames(k,1)=obj.NIS.OriginalBusNames(Column(1,k),1);
-                    Rows=find(string(obj.CIS.BusName(:,1))==string(BusNames(k,1)));
+                    Rows=find(strcmp(ss,string(BusNames(k,1))));
                     if ~isempty(Rows)
                         for j=1:1:length(Rows)
                             Counter=Counter+1;
@@ -1310,59 +1320,58 @@ classdef PredictiveGridOptimization < handle
                         end
                     end
                end
-               
+               clear ss
                %%%%% Storing the flex need
                
                 Rows=find(obj.VoltageForecasts.CongestionNumber==i);
-                obj.FlexNeed(i).ActivationTime=obj.VoltageForecasts.Time(Rows(1));
-                obj.FlexNeed(i).Duration.Value=60; % assuming that flex duration is always 60 Mins
-                obj.FlexNeed(i).Duration.UnitOfMeasure="Minute";
+                obj.FlexNeedDMS(i).ActivationTime=obj.VoltageForecasts.Time(Rows(1));
+                obj.FlexNeedDMS(i).Duration.Value=60; % assuming that flex duration is always 60 Mins
+                obj.FlexNeedDMS(i).Duration.UnitOfMeasure="Minute";
                 if obj.VoltageForecasts.VioDirection(Rows(1))=="over"
-                    obj.FlexNeed(i).Direction="downregulation";
+                    obj.FlexNeedDMS(i).Direction="downregulation";
                 else
-                    obj.FlexNeed(i).Direction="upregulation";
+                    obj.FlexNeedDMS(i).Direction="upregulation";
                 end
-                obj.FlexNeed(i).RealPowerMin.Value=RealPowerMin/1000; % Divided by 1000 to make it kW
-                obj.FlexNeed(i).RealPowerMin.UnitOfMeasure="kW";
-%                 obj.FlexNeed(i).RealPower.TimeIndex=obj.FlexNeed(i).ActivationTime;  % for tanji
-%                 obj.FlexNeed(i).RealPower.Series.Regulation.Values=RealPowerMin/1000; % for tanjim
-                obj.FlexNeed(i).RealPower.Series.Regulation.UnitOfMeasure="kW";
+                obj.FlexNeedDMS(i).RealPowerMin.Value=RealPowerMin/1000; % Divided by 1000 to make it kW
+                obj.FlexNeedDMS(i).RealPowerMin.UnitOfMeasure="kW";
                 
-                obj.FlexNeed(i).RealPowerMin.UnitOfMeasure="kW";
-                obj.FlexNeed(i).RealPowerRequest.Value=RealPowerRequest/1000; % Divided by 1000 to make it kW
-                obj.FlexNeed(i).RealPowerRequest.UnitOfMeasure="kW";
+                obj.FlexNeedDMS(i).RealPowerRequest.Value=RealPowerRequest/1000; % Divided by 1000 to make it kW
+                obj.FlexNeedDMS(i).RealPowerRequest.UnitOfMeasure="kW";
+                
+                
                 if Counter>0
-                    obj.FlexNeed(i).CustomerIds=CustomerIds;
+                    obj.FlexNeedDMS(i).CustomerIds=CustomerIds;
                 else
-                    obj.FlexNeed(i).CustomerIds="None";   % It means there is no CustomerId inside the congestion Zone
+                    obj.FlexNeedDMS(i).CustomerIds="None";   % It means there is no CustomerId inside the congestion Zone
                 end
-                obj.FlexNeed(i).MainBus=BusName;
-                obj.FlexNeed(i).VoltageViolation=VoltageViolation;
+                obj.FlexNeedDMS(i).MainBus=BusName;
+                obj.FlexNeedDMS(i).VoltageViolation=VoltageViolation;
                 pause(0.01);   % to make sure that time is unique because it is used for congestion Id
                     t = datetime('now', 'TimeZone', 'UTC');
                     t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
                     s = strcat(obj.SourceProcessId,'-',t);
 %                 s=num2str(i)
-                obj.FlexNeed(i).CongestionId=s;
-                obj.FlexNeed(i).BidResolution.Value=10;
-                obj.FlexNeed(i).BidResolution.UnitOfMeasure="kW"; 
+                obj.FlexNeedDMS(i).CongestionId=s;
+                obj.FlexNeedDMS(i).BidResolution.Value=5;
+                obj.FlexNeedDMS(i).BidResolution.UnitOfMeasure="kW"; 
+                
                 clear Congestion CustomerIds BusNames
            end
            
            
             %%%%% Deleting the CustomerIds that are common between flexibility needs with a same activation time but opposite direction using relative sensitivity calculation
             
-            NumOfNeeds=length(obj.FlexNeed);
+            NumOfNeeds=length(obj.FlexNeedDMS);
             B="0";
             for i=1:1:NumOfNeeds
-               if ~strcmp(B,obj.FlexNeed(i).ActivationTime)
-                    A=obj.FlexNeed(i).ActivationTime;
+               if ~strcmp(B,obj.FlexNeedDMS(i).ActivationTime)
+                    A=obj.FlexNeedDMS(i).ActivationTime;
                     B=A;
                     Flag=0;
                     SameTime=[];
                     for m=1:NumOfNeeds
-                        if strcmp(A,obj.FlexNeed(m).ActivationTime)
-                            if ~strcmp(obj.FlexNeed(i).Direction,obj.FlexNeed(m).Direction)
+                        if strcmp(A,obj.FlexNeedDMS(m).ActivationTime)
+                            if ~strcmp(obj.FlexNeedDMS(i).Direction,obj.FlexNeedDMS(m).Direction)
                                 SameTime(m)=m;
                                 Flag=1;
                             end
@@ -1378,12 +1387,12 @@ classdef PredictiveGridOptimization < handle
                         rows=length(SameTime)
                         for k=1:1:length(rows)
                             Flag=0;
-                            First=obj.FlexNeed(i).CustomerIds;
-                            FirstBusName=obj.FlexNeed(i).MainBus;
+                            First=obj.FlexNeedDMS(i).CustomerIds;
+                            FirstBusName=obj.FlexNeedDMS(i).MainBus;
                             FirstBusNumber=find(obj.NIS.OriginalBusNames==FirstBusName);
 
-                            Second=obj.FlexNeed(rows(k)).CustomerIds;
-                            SecondBusName=obj.FlexNeed(rows(k)).MainBus;
+                            Second=obj.FlexNeedDMS(rows(k)).CustomerIds;
+                            SecondBusName=obj.FlexNeedDMS(rows(k)).MainBus;
                             SecondBusNumber=find(strcmp(obj.NIS.OriginalBusNames,SecondBusName));
                             
                             if SecondBusNumber==1
@@ -1437,70 +1446,76 @@ classdef PredictiveGridOptimization < handle
                                     SecondRow=find(strcmp(Second,"0"));
                                 end
    
-                                obj.FlexNeed(i).CustomerIds=First;
-                                obj.FlexNeed(rows(k)).CustomerIds=Second;
+                                obj.FlexNeedDMS(i).CustomerIds=First;
+                                obj.FlexNeedDMS(rows(k)).CustomerIds=Second;
                             end
                         end
                     end
                 end 
             end
+            obj.FlexNeedMarket=obj.FlexNeedDMS;
+            for i=1:1:length(obj.FlexNeedMarket)% there is a difference between flex needs in DMS and what is asked from Market
+                obj.FlexNeedMarket(i).RealPowerMin.Value=5; % It allows participation of small scale Flex.
+                obj.FlexNeedMarket(i).RealPowerRequest.Value=(obj.FNM)*(obj.FlexNeedDMS(i).RealPowerRequest.Value);
+                if obj.FlexNeedMarket(i).RealPowerRequest.Value<5
+                    obj.FlexNeedMarket(i).RealPowerRequest.Value=5;
+                end
+            end
             
-            x=char(obj.StartTime);
-            x=x(12:14);
-            x=string(x);
-            x=str2double(x);
-            for i=1:length(obj.FlexNeed) 
-                if ~strcmp(obj.FlexNeed(i).CustomerIds,"None")
+            for i=1:length(obj.FlexNeedDMS)   
+                if ~strcmp(obj.FlexNeedDMS(i).CustomerIds,"None")
                    obj.CustomerIdExistanceFlag=1; 
                 end
             end
             
-            FlexNeedsssss=struct2table(obj.FlexNeed)
-            SavedFlexNeed=jsonencode(obj.FlexNeed)
+            FlexNeedsssss=struct2table(obj.FlexNeedDMS)
+            SavedFlexNeed=jsonencode(obj.FlexNeedDMS)
             
-            
-            %if x>=14 && x<15
+            if obj.x>=12 && obj.x<13
                 disp('flex need calculation was done and ready to be forwarded')
                 obj.FlexNeedTimeFlag=1;
                 if obj.CustomerIdExistanceFlag==1  
                     FlexibilityNeedForwarding(obj);   %  forwarding the flex needs to LFM
                 end
-            %else
-              %  disp('Although flex need calculation is done, it is not the right time for requesting')
-             %   obj.StatusReadiness;
-            %end
+            else
+               disp('Although flex need calculation is done, it is not the right time for requesting')
+               obj.StatusReadiness;
+            end
        end
        
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 11          
        
         function FlexibilityNeedForwarding(obj)
-            for i=1:length(obj.FlexNeed)
-                CustomerIdNonExistance=find(strcmp(obj.FlexNeed(i).CustomerIds,"None"),1);  % To avoid sending flexibility need when there is no CustomerId inside congestion area
+            for i=1:length(obj.FlexNeedDMS)
+                CustomerIdNonExistance=find(strcmp(obj.FlexNeedDMS(i).CustomerIds,"None"),1);  % To avoid sending flexibility need when there is no CustomerId inside congestion area
                 if isempty(CustomerIdNonExistance) 
-                    AbstractResult.Type='FlexibilityNeed';
-                    AbstractResult.SimulationId=obj.SimulationId{1};
-                    AbstractResult.SourceProcessId=obj.SourceProcessId;
+                    obj.AbstractResult.Type='FlexibilityNeed';
+                    obj.AbstractResult.SimulationId=obj.SimulationId{1};
+                    obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
                     obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                         s = strcat('PGO',num2str(obj.MessageCounterOutbound));
-                    AbstractResult.MessageId=s;
-                    AbstractResult.EpochNumber=obj.Epoch;
-                    AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+                    obj.AbstractResult.MessageId=s;
+                    obj.AbstractResult.EpochNumber=obj.Epoch;
+                    obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
                         t = datetime('now', 'TimeZone', 'UTC');
                         t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-                    AbstractResult.Timestamp=t; % abstract result end
+                    obj.AbstractResult.Timestamp=t; % abstract result end
 
-                    AbstractResult.ActivationTime=obj.FlexNeed(i).ActivationTime;
-                    AbstractResult.Duration=obj.FlexNeed(i).Duration;
-                    AbstractResult.Direction=obj.FlexNeed(i).Direction;
-                    AbstractResult.RealPowerMin=obj.FlexNeed(i).RealPowerMin;
-                    AbstractResult.RealPowerRequest=obj.FlexNeed(i).RealPowerRequest;
-                    AbstractResult.CustomerIds=obj.FlexNeed(i).CustomerIds;
-                    AbstractResult.CongestionId=obj.FlexNeed(i).CongestionId;
-                    AbstractResult.BidResolution=obj.FlexNeed(i).BidResolution;
+                    obj.AbstractResult.ActivationTime=obj.FlexNeedMarket(i).ActivationTime;
+                    obj.AbstractResult.Duration=obj.FlexNeedMarket(i).Duration;
+                    obj.AbstractResult.Direction=obj.FlexNeedMarket(i).Direction;
+                    obj.AbstractResult.RealPowerMin=obj.FlexNeedMarket(i).RealPowerMin;
+                    obj.AbstractResult.RealPowerRequest=obj.FlexNeedMarket(i).RealPowerRequest;
+                    obj.AbstractResult.CustomerIds=obj.FlexNeedMarket(i).CustomerIds;
+                    obj.AbstractResult.CongestionId=obj.FlexNeedMarket(i).CongestionId;
+                    obj.AbstractResult.BidResolution=obj.FlexNeedMarket(i).BidResolution;
 
-                    MyStringOut = java.lang.String(jsonencode(AbstractResult));
+                    MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
                     MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                    obj.AmqpConnector.sendMessage('FlexibilityNeed.procem-lfmA', MyBytesOut);
+                        a=strcat('FlexibilityNeed.',obj.MarketId);
+                    obj.AmqpConnector.sendMessage(a, MyBytesOut);
+                    clear a MyBytesOut MyStringOut t s CustomerIdNonExistance
+                    obj.AbstractResult=[];
                 end
             end
             obj.FlexNeedSentFlag=1;
@@ -1511,13 +1526,14 @@ classdef PredictiveGridOptimization < handle
         
         function LFMOffers(obj)
             obj.State='Busy';
-            x=obj.StartTime;
-            x=char(x);
-            x=x(12:14);
-            x=string(x);
-            x=str2double(x);
+%             x=obj.StartTime;
+%             x=char(x);
+%             x=x(12:14);
+%             x=string(x);
+%             x=str2double(x);
+            disp('Offers are coming')
             Offer=[];
-            %if x>=14 || x<17   % LFM market is open for 3 hours
+            if obj.x>=12 && obj.x<14   % LFM market is open for 3 hours
                 if obj.OfferCounter==0
                     existance=[]; % existance is set empty
                 else
@@ -1536,8 +1552,8 @@ classdef PredictiveGridOptimization < handle
                     Offer.RealPower=obj.InboundMessage.RealPower;
                     Offer.CustomerIds=obj.InboundMessage.CustomerIds;
 
-                    CorrespondingCongestionNumber=find(strcmp(obj.FlexNeed.CongestionId,Offer.CongestionId))
-                    Offer.CongestionNumber=CorrespondingCongestionNumber
+                    CorrespondingCongestionNumber=find(strcmp(obj.FlexNeedDMS.CongestionId,Offer.CongestionId));
+                    Offer.CongestionNumber=CorrespondingCongestionNumber;
 
 %                     CustomerIds=string(obj.FlexNeed(CorrespondingCongestionNumber).CustomerIds)
 %                     for k=1:1:length(CustomerIds)
@@ -1549,10 +1565,10 @@ classdef PredictiveGridOptimization < handle
                     
                     % For ready message
                     
-                    for k=1:1:length(obj.FlexNeed)
-                       Row=find(strcmp(obj.Offer.CongestionId,obj.FlexNeed(k).CongestionId))
+                    for k=1:1:length(obj.FlexNeedDMS)
+                       Row=find(strcmp(obj.Offer.CongestionId,obj.FlexNeedDMS(k).CongestionId));
                        if ~isempty(Row)
-                            ExpectedCustomerIds=obj.FlexNeed(k).CustomerIds
+                            ExpectedCustomerIds=obj.FlexNeedDMS(k).CustomerIds
                             ExpectedNumCustomerIds=length(ExpectedCustomerIds)   % It contains the min number of CustomerIds
                             for m=1:1:length(Row)    % if OfferCount>1, then more CustomerIds should be received
                                 OfferCount=obj.Offer(Row(m)).OfferCount
@@ -1568,23 +1584,21 @@ classdef PredictiveGridOptimization < handle
                                 CustomerIdsNum=length(CustomerIds)+CustomerIdsNum;
                             end
                             if CustomerIdsNum==ExpectedNumCustomerIds
-                                obj.OfferReceivedFlag=1
+                                obj.OfferReceivedFlag=1;
                             else
-                                obj.OfferReceivedFlag=0
+                                obj.OfferReceivedFlag=0;
                                 break;
                             end
                        else
-                            obj.OfferReceivedFlag=0
+                            obj.OfferReceivedFlag=0;
                             break;
                        end
                     end
                 end
                        
-                if obj.OfferReceivedFlag==0
-                    obj.Listener;  % more offers need to arrive
-                elseif obj.OfferReceivedFlag==1
+                if obj.OfferReceivedFlag==1
                     if obj.FlexNeedFlag==1
-                        if x==16          % Making decision should happen at 16 every day to assure that all Flex have participated in the LFM.
+                        if obj.x==14          % Making decision should happen at 16 every day to assure that all Flex have participated in the LFM.
                             obj.OfferSelectionTimeFlag=1;
                             obj.OfferSelection;   % Decision making
                         else
@@ -1592,15 +1606,14 @@ classdef PredictiveGridOptimization < handle
                         end
                     end
                 end
-            %end
+            end
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 13
         
         function OfferSelection(obj)
-            NumFlexNeeds=length(obj.FlexNeed);
-            for i=1:1:NumFlexNeeds
-               Rows=find(strcmp(obj.Offer.CongestionId,obj.FlexNeed(i).CongestionId));
+            for i=1:1:length(obj.FlexNeedDMS)
+               Rows=find(strcmp(obj.Offer.CongestionId,obj.FlexNeedDMS(i).CongestionId));
                if ~isempty(Rows)
                    NumOfOffers=length(Rows);
                    Offer=[];
@@ -1612,18 +1625,18 @@ classdef PredictiveGridOptimization < handle
                        OfferedRealPower=0;
                        for m=1:1:NumOfOffers
                             OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
-                            if OfferedRealPower>=obj.FlexNeed(i).RealPowerMin
-                                obj.FlexNeed(i).OfferId(m)=Offer(m).OfferId; % selection of the cheapest offer
+                            if OfferedRealPower>=obj.FlexNeedDMS(i).RealPowerRequest
+                                obj.FlexNeedDMS(i).OfferId(m)=Offer(m).OfferId; % selection of the cheapest offer
                                 obj.OfferSelectedFlag=1;
                                 break;
                             else
-                                obj.FlexNeed(i).OfferId(m)=Offer(m).OfferId;
+                                obj.FlexNeedDMS(i).OfferId(m)=Offer(m).OfferId;
                             %   OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
                                 obj.OfferSelectedFlag=1;
                             end
                        end
                    else % in this case, there is only one offer that will be taken. something is better than nothing!
-                       obj.FlexNeed(i).OfferId=obj.Offer(Rows(1));  
+                       obj.FlexNeedDMS(i).OfferId=obj.Offer(Rows(1));  
                        obj.OfferSelectedFlag=1;
                    end
                end
@@ -1638,26 +1651,29 @@ classdef PredictiveGridOptimization < handle
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 14
         
         function OfferSelectionForwading(obj)
-            NumFlexNeeds=length(obj.FlexNeed);
+            NumFlexNeeds=length(obj.FlexNeedDMS);
             for i=1:1:NumFlexNeeds
-               if ~isempty (obj.FlexNeed(i).OfferId)
-                    AbstractResult.Type='SelectedOffer';
-                    AbstractResult.SimulationId=obj.SimulationId{1};
-                    AbstractResult.SourceProcessId=obj.SourceProcessId;
+               if ~isempty (obj.FlexNeedDMS(i).OfferId)
+                    obj.AbstractResult.Type='SelectedOffer';
+                    obj.AbstractResult.SimulationId=obj.SimulationId{1};
+                    obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
                     obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                         s = strcat('PGO',num2str(obj.MessageCounterOutbound));
-                    AbstractResult.MessageId=s;
-                    AbstractResult.EpochNumber=obj.Epoch;
-                    AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+                    obj.AbstractResult.MessageId=s;
+                    obj.AbstractResult.EpochNumber=obj.Epoch;
+                    obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
                         t = datetime('now', 'TimeZone', 'UTC');
                         t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-                    AbstractResult.Timestamp=t; % abstract result end
-                    AbstractResult.OfferIds=obj.FlexNeed(i).OfferId;
+                    obj.AbstractResult.Timestamp=t; % abstract result end
+                    obj.AbstractResult.OfferIds=obj.FlexNeedDMS(i).OfferId;
 
-                    MyStringOut = java.lang.String(jsonencode(AbstractResult));
+                    MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
                     MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                    obj.AmqpConnector.sendMessage('SelectedOffer', MyBytesOut);
+                        a=strcat('SelectedOffer.',obj.MarketId);                        
+                    obj.AmqpConnector.sendMessage(a, MyBytesOut);
                     obj.SlectedOfferForwardedFlag=1;
+                    clear a MyBytesOut MyStringOut t s
+                    obj.AbstractResult=[];
                 end
             end
             obj.StatusReadiness;
@@ -1666,104 +1682,85 @@ classdef PredictiveGridOptimization < handle
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 15
 
         function StatusReadinessGrid(obj)
-            if obj.InboundMessage.EpochNumber~=0     % For Epoches > 0
-               if (obj.InboundMessage.EpochNumber==obj.Epoch)
-                    if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)      % just analyse the status message that is published by Grid
-                        AbstractResult.Type='Status';
-                        AbstractResult.SimulationId=obj.SimulationId{1};
-                        AbstractResult.SourceProcessId=obj.SourceProcessId;
-                        obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
-                            s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));
-                        AbstractResult.MessageId=s;
-                        AbstractResult.EpochNumber=obj.Epoch;
-                        AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
-                        ErrorFlag=0;
-                        ReadinessFlag=0;
-                        WarningFlag=0;
+           if (obj.InboundMessage.EpochNumber==obj.Epoch)
+                ErrorFlag=0;
+                WarningFlag=0;
 
-                        %%%%%
+                %%%%%
 
-                        if strcmp(obj.InboundMessage.Value,'ready')
-                            obj.GridReadinessFlag=1;
-                            if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                                if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)  % If Grid is ready, Then PGO is ready. 
-                                    if obj.FlexNeedFlag==0
-                                        AbstractResult.Value='ready';
-                                        ReadinessFlag=1;
-                                        disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')                                           
-                                        disp('PGO reported ready message to Simulation Manager because: 1- Grid was ready, 2- all expected voltage and current forecasts were received, 3- flexibility is not needed')
-                                        disp(['SimulationId:' obj.SimulationId])
-                                    end
-                                end
-                            end
-                        end
-                        if strcmp(obj.InboundMessage.Value,'error')
-                            obj.GridReadinessFlag=0;
-                            AbstractResult.Value='error';
-                            ErrorFlag=1;
-                            AbstractResult.Description='Grid reported Error';
-                            disp('PGO reported "error" message to Simulation Manager because an error occured on Grid')
+                if strcmp(obj.InboundMessage.Value,'ready')
+                    obj.GridReadinessFlag=1;
+                    disp('Grid is ready')
+                end
+                if strcmp(obj.InboundMessage.Value,'error')
+                    obj.GridReadinessFlag=0;
+                    obj.AbstractResult.Value='error';
+                    ErrorFlag=1;
+                    obj.AbstractResult.Description='Grid reported Error';
+                    disp('PGO reported "error" message to Simulation Manager because an error occured on Grid')
+                    disp(['SimulationId:' obj.SimulationId])
+                end
+                
+                % Warning
+                
+                if obj.GridReadinessFlag==1
+                    if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+                            obj.AbstractResult.Value='warning';
+                            WarningFlag=1;
+                            obj.AbstractResult.Description='Forecasted Voltage values werenot received completely';
+                            disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all voltage values are not received yet')
                             disp(['SimulationId:' obj.SimulationId])
-                        end
-                        if strcmp(obj.InboundMessage.Value,'ready')
-                            obj.GridReadinessFlag=1;
-                            if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
-                                if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                                    AbstractResult.Value='error';
-                                    WarningFlag=1;
-                                    AbstractResult.Description='Forecasted Voltage values werenot received completely';
-                                    disp('PGO reported "error" message to Simulation Manager because the forecasted voltage values werenot received completely')
-                                    disp(['SimulationId:' obj.SimulationId])
-                                end
-                            end
-                        end
-                        if (strcmp(obj.InboundMessage.Value,'ready'))
-                            obj.GridReadinessFlag=1;
-                            if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                                if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
-                                    AbstractResult.Value='error';
-                                    WarningFlag=1;
-                                    AbstractResult.Description='Forecasted current values werenot received completely';
-                                    disp('PGO reported "error" message to Simulation Manager because the forecasted current values werenot received completely')
-                                    disp(['SimulationId:' obj.SimulationId])
-                                end
-                            end
-                        end
-                        if (strcmp(obj.InboundMessage.Value,'ready'))
-                            obj.GridReadinessFlag=1;
-                            if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
-                                if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
-                                    AbstractResult.Value='error';
-                                    WarningFlag=1;
-                                    AbstractResult.Description='Neither forecasted votage nor current values were received completely';
-                                    disp('PGO reported "error" message to Simulation Manager because both forecasted voltage and current values were incomplete')
-                                    disp(['SimulationId:' obj.SimulationId])
-                                end
-                            end
-                        end
-                        %%%%%
-
-                        if ErrorFlag==1
-                                t = datetime('now', 'TimeZone', 'UTC');
-                                t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-                            AbstractResult.Timestamp=t;
-                            MyStringOut = java.lang.String(jsonencode(AbstractResult));
-                            MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                            obj.AmqpConnector.sendMessage('Status.Error', MyBytesOut);
-                            obj.State='Stopped';
-                        elseif ReadinessFlag==1
-                                t = datetime('now', 'TimeZone', 'UTC');
-                                t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-                            AbstractResult.Timestamp=t;
-                            MyStringOut = java.lang.String(jsonencode(AbstractResult));
-                            MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-                            obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut);
-                            obj.Listener;
-                        else
-                            obj.StatusReadiness;
                         end
                     end
                 end
+                if obj.GridReadinessFlag==1
+                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
+                            obj.AbstractResult.Value='warning';
+                            WarningFlag=1;
+                            obj.AbstractResult.Description='Forecasted current values werenot received completely';
+                            disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all current values are not received yet')
+                            disp(['SimulationId:' obj.SimulationId])
+                        end
+                    end
+                end
+                if obj.GridReadinessFlag==1
+                    if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
+                        if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
+                            obj.AbstractResult.Value='warning';
+                            WarningFlag=1;
+                            obj.AbstractResult.Description='Neither forecasted votage nor current values were received completely';
+                            disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all voltage and current values are not received yet')
+                            disp(['SimulationId:' obj.SimulationId])
+                        end
+                    end
+                end
+                %%%%%
+
+                if ErrorFlag==1
+                    obj.AbstractResult.Type='Status';
+                    obj.AbstractResult.SimulationId=obj.SimulationId{1};
+                    obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
+                    obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
+                        s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));
+                    obj.AbstractResult.MessageId=s;
+                    obj.AbstractResult.EpochNumber=obj.Epoch;
+                    obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+                        t = datetime('now', 'TimeZone', 'UTC');
+                        t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
+                    obj.AbstractResult.Timestamp=t;
+                    MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
+                    MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
+                    obj.AmqpConnector.sendMessage('Status.Error', MyBytesOut);
+                    obj.State='Stopped';
+                    clear MyStringOut MyBytesOut t s
+                    obj.AbstractResult=[];
+                    obj.State='Stopped';
+                else
+                    obj.StatusReadiness;
+                end
+                clear ErrorFlag WarningFlag
             end
         end
         
@@ -1772,161 +1769,86 @@ classdef PredictiveGridOptimization < handle
         function StatusReadiness(obj) 
            ReadyFlag=0;
            %%%
-           %if obj.GridReadinessFlag==1
-                if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                    if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                        if obj.FlexNeedFlag==0 % No flex need
-                           AbstractResult.Value='ready'; 
-                           ReadyFlag=1;
+           if obj.GridReadinessFlag==1 % Grid is ready
+                if obj.FlexNeedFlag==2 % No flex need
+                   ReadyFlag=1;
+                   disp('Grid is ready, there is no need for flex')
+                end
+           %%%
+                if obj.FlexNeedTimeFlag==0 % time for bidding has not occured yet
+                    ReadyFlag=1;
+                    disp('grid is ready, market is not open yet')
+                end
+           %%%
+                if obj.FlexNeedFlag==1 % flex need exist
+                    if obj.FlexNeedTimeFlag==1 % time for bidding has occured
+                        if obj.CustomerIdExistanceFlag==0 % there is no CustomerId within the congestion area
+                            ReadyFlag=1;
+                            disp('Grid is ready, CustomerId inside the congesiton zone do not exist')
                         end
                     end
                 end
-           %end
            %%%
-           if ReadyFlag==0
-           %    if obj.GridReadinessFlag==1 
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            if obj.FlexNeedFlag==1 % flex need exist
-                                if obj.FlexNeedTimeFlag==0 % time for bidding has not occured yet
-                                    AbstractResult.Value='ready'; 
-                                    ReadyFlag=1;
-                                end
-                            end
-                        end
+                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                    if obj.OfferReceivedFlag==0 % required number of offers have not arrived yet
+                        ReadyFlag=0; % keep listening
+                        disp('Grid is ready, Offers has not received completely')
                     end
-           %    end
-           end
-           %%%
-           if ReadyFlag==0
-               %if obj.GridReadinessFlag==1 
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            if obj.FlexNeedFlag==1 % flex need exist
-                                if obj.FlexNeedTimeFlag==1 % time for bidding has occured
-                                    if obj.CustomerIdExistanceFlag==0 % there is no CustomerId within the congestion area
-                                        AbstractResult.Value='ready'; 
-                                        ReadyFlag=1;
-                                    end
-                                end
-                            end
-                        end
-                    end
-               %end
-           end
-           %%%
-           if ReadyFlag==0
-               %if obj.GridReadinessFlag==1 
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            if obj.FlexNeedFlag==1 % Flex need exist
-                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
-                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                            if obj.OfferReceivedFlag==0 % required number of offers have not arrived yet
-                                                ReadyFlag=0; % keep listening
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-               %end
-           end
+                end
            %%% 
-           if ReadyFlag==0
-               %if obj.GridReadinessFlag==1 
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            if obj.FlexNeedFlag==1 %Flex need exits 
-                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
-                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                            if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                                                if obj.OfferSelectionTimeFlag==0 % Time for offer selection has not occured
-                                                    AbstractResult.Value='ready';
-                                                    ReadyFlag=1;
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
-                            end
+                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                    if obj.OfferReceivedFlag==1 % required number of offers have arrived
+                        if obj.OfferSelectionTimeFlag==0 % Time for offer selection has not occured
+                            ReadyFlag=1;
+                            disp('Grid is ready, Time for selection of offers has not occured')
                         end
                     end
-               %end
-           end
+                end
            %%%
-           if ReadyFlag==0
-               %if obj.GridReadinessFlag==1
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            if obj.FlexNeedFlag==1 %Flex need exits 
-                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived
-                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                            if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                                               if  obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
-                                                    if obj.OfferSelectedFlag==0 % no offer has been selected
-                                                        AbstractResult.Value='ready';
-                                                        ReadyFlag=1;
-                                                    end
-                                               end     
-                                           end
-                                        end
-                                    end
-                                end
+                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                    if obj.OfferReceivedFlag==1 % required number of offers have arrived
+                       if  obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
+                            if obj.OfferSelectedFlag==0 % no offer has been selected
+                                ReadyFlag=1;
+                                disp('Grid is ready, no offer has been selected')
                             end
-                        end
-                    end
-               %end
-           end
+                       end     
+                   end
+                end
            %%%
-           if ReadyFlag==0
-               %if obj.GridReadinessFlag==1
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            if obj.FlexNeedFlag==1 %Flex need exits 
-                                if obj.FlexNeedTimeFlag==1 % Time for bidding has arrived 
-                                    if obj.CustomerIdExistanceFlag==1 % there is at least one CustomerId within the congestion area
-                                        if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                                            if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                                                if obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
-                                                    if obj.OfferSelectedFlag==1 % offer selection has been done
-                                                        if obj.SlectedOfferForwardedFlag==1 % LFM is informed about the selected offers
-                                                            AbstractResult.Value='ready';
-                                                            ReadyFlag=1;
-                                                        end
-                                                    end
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
+                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
+                    if obj.OfferReceivedFlag==1 % required number of offers have arrived
+                        if obj.OfferSelectedFlag==1 % offer selection has been done
+                            if obj.SlectedOfferForwardedFlag==1 % LFM is informed about the selected offers
+                                ReadyFlag=1;
+                                disp('Grid is ready, offer was selected and forwarded to LFM')
                             end
                         end
                     end
-               %end
+                end
            end
            %%%
            if ReadyFlag==1
-               AbstractResult.Type='Status';
-               AbstractResult.SimulationId=obj.SimulationId{1};
-               AbstractResult.SourceProcessId=obj.SourceProcessId;
+               obj.AbstractResult.Value='ready';
+               obj.AbstractResult.Type='Status';
+               obj.AbstractResult.SimulationId=obj.SimulationId{1};
+               obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
                obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
                     s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));
-               AbstractResult.MessageId=s;
-               AbstractResult.EpochNumber=obj.Epoch;
-               AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+               obj.AbstractResult.MessageId=s;
+               obj.AbstractResult.EpochNumber=obj.Epoch;
+               obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
                     t = datetime('now', 'TimeZone', 'UTC');
                     t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-               AbstractResult.Timestamp=t;
-               MyStringOut = java.lang.String(jsonencode(AbstractResult));
+               obj.AbstractResult.Timestamp=t;
+               MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
                MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
                obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut);
+                   ss = char(strcat('PgoReady.',string(obj.SourceProcessId))) % just for testing
+               obj.AmqpConnector.sendMessage(ss, MyBytesOut);
+               clear MyBytesOut MyStringOut t s ReadyFlag
+               disp('PGO sends a ready message')
            end
-           obj.Listener;
         end
     end % End of methods
 end % End of class

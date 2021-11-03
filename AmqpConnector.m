@@ -12,7 +12,6 @@
 global NumOfSimRun     % global variable for the whole Matlab environment specifying the number of simulation runs.
 global Handles
 global States
-global Object
 global SimulationId
 NumOfSimRun=0;
 Handles={};
