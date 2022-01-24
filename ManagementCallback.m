@@ -29,8 +29,10 @@ function ManagementCallback(hObject, eventData)
             OverloadingBaseline=PredictiveGridOptimizationBlock.(PGOName).OverloadingBaseline;
             AmberLoadingBaseline=PredictiveGridOptimizationBlock.(PGOName).AmberLoadingBaseline;
             MarketId=PredictiveGridOptimizationBlock.(PGOName).ParticipatingMarketId;            
-
-            Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId);
+            MarketOpeningTime=PredictiveGridOptimizationBlock.(PGOName).MarketOpeningTime;
+            MarketClosingTime=PredictiveGridOptimizationBlock.(PGOName).MarketClosingTime;
+            
+            Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime);
 %             Handles{NumOfSimRun} = @() Object(NumOfSimRun).Main;
 %             States{NumOfSimRun}=parfeval(@() Object.Main,1);
             Object(NumOfSimRun).Main
@@ -61,9 +63,10 @@ function ManagementCallback(hObject, eventData)
                     OverloadingBaseline=PredictiveGridOptimizationBlock.(PGOName).OverloadingBaseline;
                     AmberLoadingBaseline=PredictiveGridOptimizationBlock.(PGOName).AmberLoadingBaseline;
                     MarketId=PredictiveGridOptimizationBlock.(PGOName).ParticipatingMarketId;            
-
+                    MarketOpeningTime=PredictiveGridOptimizationBlock.(PGOName).MarketOpeningTime;
+                    MarketClosingTime=PredictiveGridOptimizationBlock.(PGOName).MarketClosingTime;
                     
-                    Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId);
+                    Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime);
 %                     Handles{NumOfSimRun} = @() Object(NumOfSimRun).Main;
 %                     States{NumOfSimRun}=parfeval(@() Object.Main,1);
                     Object(NumOfSimRun).Main

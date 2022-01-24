@@ -1,4 +1,4 @@
-%                        StateMonitoring (SM) Application System
+%                        PredictiveGridOptimization (PGO) Application System
 % The application system includes the following sub-programs:
 % 1- AmqpConnector . (It listens to the Management exchange)
 % 2- ManagementCallback. (It initiates an instance of StateMonitoring class)
@@ -8,11 +8,13 @@
 % Please visit https://kannisto.github.io/Cocop.AmqpMathToolConnector/
 % 2- the API execution is dependant on the workload of StaeMonitoring. Once the StateMonitoring is idle, a new message could come.
 % Please visit https://git.ain.rd.tut.fi/procemplus/amqpmathtoolintegration
-
+clear all
+clc
 global NumOfSimRun     % global variable for the whole Matlab environment specifying the number of simulation runs.
 global Handles
 global States
 global SimulationId
+global Object
 NumOfSimRun=0;
 Handles={};
 States={};

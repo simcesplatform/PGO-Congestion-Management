@@ -15,6 +15,8 @@ classdef PredictiveGridOptimization < handle
         OverloadingBaseline
         AmberLoadingBaseline
         MarketId
+        MarketOpeningTime
+        MarketClosingTime
         GR
         GX
         DistancesR
@@ -66,7 +68,8 @@ classdef PredictiveGridOptimization < handle
         FlexNeedMarket % Flex need on the market side is stored in the "FlexNeedMarket" table
         
         % Offer
-        OfferCounter % counter of offers received from LFM
+        TotalOfferCounter % Total num of Offers receivd from LFM including empty offers and non-empty ones
+        OfferCounter % counter of non-empty offers received from LFM
         Offer   % Offers provided by LFM are stored in "Offer"
         
         % State
@@ -81,7 +84,6 @@ classdef PredictiveGridOptimization < handle
         OfferSelectedFlag   
         OfferReceivedFlag  
         SlectedOfferForwardedFlag 
-        FlexNeedTimeFlag
         OfferSelectionTimeFlag
         CustomerIdExistanceFlag
         ReceivedAllVoltageForecastsFlag
@@ -89,6 +91,9 @@ classdef PredictiveGridOptimization < handle
         NISBusAnalysisFlag
         NISBranchAnalysisFlag
         CISAnalysisFlag
+        EmptyOffersFlag
+        LFMOperationFlag
+        ReadyMessageFlag
         
         % connector to simulation specific exchange (using ProcemPlus lib)
         AmqpConnector  
@@ -103,7 +108,7 @@ classdef PredictiveGridOptimization < handle
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Constructor
         
-        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId)  
+        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime)  
             obj.SimulationSpecificExchange = SimulationSpecificExchange; % Start message
             obj.SimulationId = SimulationId;
             obj.SourceProcessId = PGOName;
@@ -119,6 +124,8 @@ classdef PredictiveGridOptimization < handle
             obj.OverloadingBaseline=OverloadingBaseline;
             obj.AmberLoadingBaseline=AmberLoadingBaseline; 
             obj.MarketId=MarketId;
+            obj.MarketOpeningTime=MarketOpeningTime;
+            obj.MarketClosingTime=MarketClosingTime;
 
             obj.ExpectedNumberOfVoltageForecasts=0;    % Initialization (Epoch 1)
             obj.ExpectedNumberOfVoltageForecasts=0;
@@ -129,12 +136,12 @@ classdef PredictiveGridOptimization < handle
             obj.MessageCounterInbound=0;    % Inbound/outbound message counter
             obj.MessageCounterOutbound=0;
             obj.OfferCounter=0;
+            obj.TotalOfferCounter=0;
 
             obj.NISBusFlag=0;  % Flag is 1 once the Bus data are receievd
             obj.NISBranchFlag=0;  % Flag is 1 once the Branch data are receievd
             obj.GridReadinessFlag=0;  % Flag is 1 once the Grid is ready
             obj.FlexNeedFlag=0;      % Flag is 1 once there is a need for flexibility
-            obj.FlexNeedTimeFlag=0;  % Flag is 1 once the time for sending the Flex need is occured
             obj.CustomerIdExistanceFlag=0; % Flag is 1 once there is at least one CustomerId inside the congestion area
             obj.FlexNeedSentFlag=0;  % Flag is 1 once a flex need is sent to LFM
             obj.OfferReceivedFlag=0;  % Flag is 1 once when the expected number of offers has been received
@@ -146,6 +153,7 @@ classdef PredictiveGridOptimization < handle
             obj.NISBusAnalysisFlag=0;
             obj.NISBranchAnalysisFlag=0;
             obj.CISAnalysisFlag=0;
+            obj.EmptyOffersFlag=0;
             obj.BusNameForTest={};
             obj.BusNodeForTest=0;
 
@@ -156,7 +164,7 @@ classdef PredictiveGridOptimization < handle
         
         function Done=Main(obj)
             obj.Subscription;
-            obj.ForecastedDataManagement;
+%             obj.ForecastedDataManagement;
             obj.GetMsg;
             if strcmp(obj.State,'Stopped')
                 disp("PGO stopped")
@@ -186,7 +194,8 @@ classdef PredictiveGridOptimization < handle
             topicsIn(6) = java.lang.String('Init.NIS.NetworkBusInfo');  % PGO needs to listen to Init.NIS.NetworkBusInfo topic published by Grid in the Epoch 1 
             topicsIn(7) = java.lang.String('Init.NIS.NetworkComponentInfo');    % PGO needs to listen to Init.NIS.NetworkComponentInfo topic published by Grid in the Epoch 1
             topicsIn(8) = java.lang.String('Init.CIS.CustomerInfo');    % PGO needs to listen to Init.CIS.CustomerInfo topic published by Grid in the Epoch 1 to know the relation between flexibility needs and customerId
-            topicsIn(9) = java.lang.String('LFMOffering.#');    % PGO needs to listen to LFMOffering topic to get its required flexibility
+                ss = char(strcat('LFMOffering.',string(obj.SourceProcessId)));
+            topicsIn(9) = java.lang.String(ss);    % PGO needs to listen to LFMOffering topic to get its required flexibility
             
             obj.AmqpConnector = fi.procemplus.amqp2math.AmqpTopicConnectorSync(AmqpProps, topicsIn); % using procemplus API for RabbitMQ broker connection
             disp(['connected to the simulation specific exchange:' obj.SimulationSpecificExchange])
@@ -245,9 +254,9 @@ classdef PredictiveGridOptimization < handle
                             MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
                             MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
                             obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut); % The topic is "Status.Ready" that PGO publishes to
-                               ss = char(strcat('PgoReady.',string(obj.SourceProcessId))) % just for testing
+                               ss = char(strcat('PgoReady.',string(obj.SourceProcessId))); % just for testing
                             obj.AmqpConnector.sendMessage(ss, MyBytesOut); % The topic is "Status.Ready" that PGO publishes to
-                            clear t s MyStringOut MyBytesOut
+                            clear t s MyStringOut MyBytesOut ss
                             obj.AbstractResult=[];
                         elseif strcmp(obj.InboundMessage.SimulationState,'stopped')
                             obj.State='Stopped';    % Turn the PGO state to stopped.
@@ -282,22 +291,46 @@ classdef PredictiveGridOptimization < handle
                             obj.MessageCounterOutbound=0;   % Resetting the number of outbound message for each Epoch
                             obj.ForecastLengthCurrent=0; % Resetting the length of the forecasts- current
                             obj.OfferCounter=0;
+                            obj.TotalOfferCounter=0;
 
                             obj.GridReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
-                            obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 when Epoch starts. The value is 1 when there is a need. The value is 2 there is no flex need.
                             obj.OfferReceivedFlag=0; % Resetting the available offer flag. The defalut is 0 showing that, currently, there is no available offer in the market
                             obj.OfferSelectedFlag=0;  % Resetting the offer selected flag. The default is 0 showing that any offer has not yet been selected duting the running Epoch.
-                            obj.FlexNeedTimeFlag=0;  % Resetting the flag. The default is 0 showing that the reght time (depending on when LFM market operates) has not arrived for sending the flexibility need.
+                            obj.FlexNeedSentFlag=0;
                             obj.OfferSelectionTimeFlag=0; % Resetting the flag. The default is 0 showing that the time for selecting the offers has not occured yet.
-                            obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 showing that No CustomerId exist within a congestion area  
-
+                            obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 in the start of the Epoch. 1 shows that there is CustomerId within the congestion need. 2 means that there is no CustomerId within the flex need.
+                            obj.EmptyOffersFlag=0;     % Resetting the Flag. The default is 0 in the start of the Epoch.1 shows that all received offers are empty.    
+                            obj.LFMOperationFlag=0;    % Resetting the Flag. The default is 0 in the start of the Epoch. 1 shows that market is open.
+                            obj.ReadyMessageFlag=0;        % Resetting the glag. The default is 0 in the start of the Epoch. 1 shows that the PGO's ready message has been sent.
+                            
+                            
+                            obj.VoltageForecasts=[];
+                            obj.VoltageForecasts=struct;
+                            obj.Offer=[];       % resetting the offers for in every Epoch.
+                            obj.Offer=struct;
+                            obj.Offer=struct2table(obj.Offer);
+                            
+                            if strcmp(class(obj.FlexNeedMarket),"table")
+                                for i=1:height(obj.FlexNeedMarket)
+                                    obj.FlexNeedMarket(i,:).OfferCount=0;
+                                    obj.FlexNeedMarket(i,:).NumOfReceivedOffers=0;                            
+                                    obj.FlexNeedMarket(i,:).Status="None";
+                                    obj.FlexNeedMarket(i,:).OfferId="None";
+                                end
+                            end
+           
                             x=obj.StartTime(12:13);
                             obj.x=str2double(x);
                             clear x
-                            if obj.x==0
-                                obj.Offer=[];       % resetting the offers for a new day.
-                                obj.FlexNeedSentFlag=0;   % Resetting the flex sent flag for the new day.
+                            if obj.x>=obj.MarketOpeningTime && obj.x<=obj.MarketClosingTime
+                               obj.LFMOperationFlag=1; 
                             end
+                            if obj.x<obj.MarketOpeningTime || obj.x>obj.MarketClosingTime
+                                obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 when Epoch starts. The value is 1 when there is a need. The value is 2 there is no flex need.
+                                obj.FlexNeedDMS=[];
+                                obj.FlexNeedDMS=struct;
+                            end
+                            
                        end
                     end
 
@@ -331,27 +364,26 @@ classdef PredictiveGridOptimization < handle
                        end
                    end
 
-
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's voltage forecasts
 
                    if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Voltage')
-                       if obj.x==12
+                       if obj.x==obj.MarketOpeningTime
                            if obj.InboundMessage.Node<4
                                VoltageViolationFlag=0;
                                obj.ReceivedAllVoltageForecastsFlag=0;
                                obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
                                ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
-    %                            obj.ForecastLengthVoltage=length(obj.InboundMessage.Forecast.TimeIndex);
-    %                            if obj.OptimizationHorizon~=obj.ForecastLengthVoltage
-    %                                disp('The forecasts lengths are not stable')
-    %                            end
+                               
                                From=1+(obj.OptimizationHorizon*(obj.NumberOfReceivedVoltageValues-1));
                                To=obj.NumberOfReceivedVoltageValues*obj.OptimizationHorizon;
                                TempStatus=string(zeros(obj.OptimizationHorizon,1));
-                               TempViolation=string(zeros(obj.OptimizationHorizon,1));
+                               TempViolation=zeros(obj.OptimizationHorizon,1);
                                TempVioDir=string(zeros(obj.OptimizationHorizon,1));
 
-                               BusName=obj.InboundMessage.Bus;
+                               BusName=string(obj.InboundMessage.Bus);
+%                                if strcmp(BusName,"scd_101990")
+%                                    obj.InboundMessage.Forecast.Series.Magnitude.Values=(obj.InboundMessage.Forecast.Series.Magnitude.Values)*1.025;
+%                                end
                                Node=obj.InboundMessage.Node;
                                Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
                                NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
@@ -411,87 +443,90 @@ classdef PredictiveGridOptimization < handle
                                 obj.VoltageForecasts.Status(From:To,:)=TempStatus;
                                 obj.VoltageForecasts.VioDirection(From:To,:)=TempVioDir;
                                 obj.VoltageForecasts.CongestionNumber(From:To,:)=0;
-                                if ReceivedVoltageValues==1077
-                                    Expected=obj.ExpectedNumberOfVoltageForecasts
-                                    Received=length(obj.VoltageForecasts.Time)
-                                end
+%                                 if ReceivedVoltageValues==1077
+%                                     Expected=obj.ExpectedNumberOfVoltageForecasts
+%                                     Received=length(obj.VoltageForecasts.Time)
+%                                 end
                                 clear Row NominalVoltage Vmin1 Vmax1 Vmin2 Vmax2 TempVioDir TempViolation TempStatus From To VoltageViolationFlag ReceivedVoltageValues  
                                 %%%%% Deleting the rows without violation when all the voltage forecasts are received
-
 
                                 if obj.NumberOfReceivedVoltageValues==(3*obj.NumberofBuses)
                                     disp('All voltages were received')
                                     obj.ReceivedAllVoltageForecastsFlag=1;
-                                    if obj.x>=12 && obj.x<13
-                                        obj.FlexNeedTimeFlag=1;
-                                        RowWithVio=find(obj.VoltageForecasts.Violation~=0)
-                                        if ~isempty(RowWithVio)
-                                            n=length(RowWithVio);
-                                            for k=1:1:n
-                                                Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
-                                            end
-                                            obj.VoltageForecasts=[];
-                                            obj.VoltageForecasts=Temporary;
-                                            clear Temporary x RowWithVio
-                                            % voltages that donot have violation are deleted
-                                        end
-                                        n=length(obj.VoltageForecasts.Time)   % It gives the number of violations
-                                        x=char(obj.StartTime)
-                                        Today=x(1:10)
-                                        Today=datetime(Today,'InputFormat','yyyy-MM-dd')
-                                        NextDayStart=dateshift(Today,'start','day','next')     
-                                        NextDayEnd=dateshift(NextDayStart,'start','day','next')
-                                        if ~isempty(n)
-                                            for i=1:1:length(obj.VoltageForecasts.Time)
-                                                i=i
-                                                x=obj.VoltageForecasts.Time(i);
-                                                type=class(x);
-                                                if strcmp(type,"string")
-                                                    x=char(x);
+                                    n=length(obj.VoltageForecasts.Time);   % It gives the number of violations
+                                    x=char(obj.StartTime);
+                                    Today=x(1:10);
+                                    Today=datetime(Today,'InputFormat','yyyy-MM-dd');
+                                    NextDayStart=dateshift(Today,'start','day','next');  
+                                    NextDayEnd=dateshift(NextDayStart,'start','day','next');
+%                                     if ~isempty(n)
+%                                         for i=1:1:length(obj.VoltageForecasts.Time)
+%                                             if obj.VoltageForecasts.Violation(i)~=0
+%                                                 x=char(obj.VoltageForecasts.Time(i));
+%                                                 x=x(1:10);
+%                                                 x=datetime(x,'InputFormat','yyyy-MM-dd');
+%                                                 if x>NextDayEnd
+%                                                     obj.VoltageForecasts.Violation(i)=0;  % Deleting the rows outsidet the market operation window
+%                                                 elseif x<NextDayStart
+%                                                     obj.VoltageForecasts.Violation(i)=0;  % Deleting the rows outsidet the market operation window
+%                                                 else
+%                                                 end
+%                                             end
+%                                         end
+%                                     end
+
+                                    if ~isempty(n)
+                                        for i=1:1:length(obj.VoltageForecasts.Time)
+                                            if obj.VoltageForecasts.Violation(i)~=0
+                                                day=char(obj.VoltageForecasts.Time(i));
+                                                time=str2double(day(12:13));
+                                                day=day(1:10);
+                                                day=datetime(day,'InputFormat','yyyy-MM-dd');
+                                                if day==Today
+                                                    if time<=obj.MarketClosingTime
+                                                        obj.VoltageForecasts.Violation(i)=0;
+                                                    end
                                                 end
-                                                x=x(1:10);
-                                                x=datetime(x,'InputFormat','yyyy-MM-dd');
-                                                if x>NextDayEnd
-                                                    obj.VoltageForecasts.Violation(i,:)=0;  % Deleting the rows outsidet the market operation window
-                                                elseif x<NextDayStart
-                                                    obj.VoltageForecasts.Violation(i,:)=0;  % Deleting the rows outsidet the market operation window
-                                                else
+                                                if day==NextDayStart
+                                                    if time>=obj.MarketOpeningTime  
+                                                        obj.VoltageForecasts.Violation(i)=0;  % Deleting the rows outsidet the market operation window
+                                                    end
                                                 end
                                             end
                                         end
-                                        RowWithVio=find(obj.VoltageForecasts.Violation~=0)
-                                        if ~isempty(RowWithVio)
-                                            n=length(RowWithVio);
-                                            for k=1:1:n
-                                                Temporary(k,:)=obj.VoltageForecasts((RowWithVio(k)),:);
-                                            end
-                                            obj.VoltageForecasts=[];
-                                            obj.VoltageForecasts=Temporary;
-                                            clear Temporary x RowWithVio
-                                            % buying flex from LFM will be from 00:00 next day to 23:59, therefore, voltage violations of the next day is only considered
+                                    end
+                                    RowWithVio=find(obj.VoltageForecasts.Violation~=0);
+                                    obj.VoltageForecasts=struct2table(obj.VoltageForecasts);
+                                    if ~isempty(RowWithVio)
+                                        n=length(RowWithVio);
+                                        for k=1:1:n
+                                            obj.VoltageForecasts(k,:)=obj.VoltageForecasts(RowWithVio(k),:);
                                         end
-                                        n=length(obj.VoltageForecasts.Time)
-                                        if ~isempty(n)
-                                            obj.FlexNeedFlag=1;
-                                            if  obj.ReceivedAllCurrentForecastsFlag==1 
-                                                disp('Flex is needed- voltage')
-                                                obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
-                                                obj.FlexibilityNeed;
-                                            end
-                                        else
-                                          obj.FlexNeedFlag=2;  % It means that Voltages are received, but there is no flex need
-                                          obj.StatusReadiness;
+                                        s=obj.VoltageForecasts(1:n,:);
+                                        obj.VoltageForecasts=struct;
+                                        obj.VoltageForecasts=struct2table(obj.VoltageForecasts);
+                                        obj.VoltageForecasts=s;
+                                        
+                                        clear x s
+                                        % voltages that donot have violation are deleted
+                                    end
+                                    RowWithVio=find(obj.VoltageForecasts.Violation~=0);
+                                    if ~isempty(RowWithVio)
+                                        obj.FlexNeedFlag=1; % It means there is a need for flex
+                                        clear RowWithVio
+                                        if  obj.ReceivedAllCurrentForecastsFlag==1 
+                                            disp('Flex is needed- voltage')
+                                            
+                                            obj.VoltageForecasts=sortrows(obj.VoltageForecasts); % Sorting the rows based on the time first, then violation etc
+                                            obj.FlexibilityNeed;
                                         end
                                     else
-                                        disp('Market is not open yet')
-    %                                     obj.VoltageForecasts=[];
-                                        obj.FlexNeedTimeFlag=0;
-                                        obj.StatusReadiness;
+                                      obj.FlexNeedFlag=2;  % It means that Voltages are received, but there is no flex need
+                                      obj.StatusReadiness;
                                     end
                                 end
                            end
                        else
-                           obj.FlexNeedTimeFlag=0;
                            obj.StatusReadiness;
                        end
                     end
@@ -656,7 +691,6 @@ classdef PredictiveGridOptimization < handle
 %                                 end
                         end
                    end
-
 
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When LFM publishes the available offers of energy communities (ECs)
 
@@ -898,7 +932,11 @@ classdef PredictiveGridOptimization < handle
                 obj.NISBranchAnalysisFlag=1;
                 disp(['SimulationId:' obj.SimulationId])
                 disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-                obj.SensitivityAnalysis
+                if obj.CISAnalysisFlag==1
+                    obj.SensitivityAnalysis;
+                else
+                    obj.StatusReadiness;
+                end
            else
                obj.NISBranchData=obj.InboundMessage;
                obj.NISBranchFlag=1;
@@ -918,15 +956,26 @@ classdef PredictiveGridOptimization < handle
             clear SourceNode TargetNode EdgeWeightsR EdgeWeightsX
             SensitivityMatrixR=zeros(obj.NumberofBuses,obj.NumberofBuses);
             SensitivityMatrixX=zeros(obj.NumberofBuses,obj.NumberofBuses);
-%             h=plot(obj.GR);
             obj.DistancesR=distances(obj.GR);
             obj.DistancesX=distances(obj.GX);
-
-%             for aa=1:obj.NumberofBuses
-%                 BusName=obj.NIS.OriginalBusNames(aa);
-%                 labelnode(h,aa,BusName);
-%             end
-            
+%             h=plot(obj.GR);
+%             NameWithscd=~cellfun('isempty',strfind(obj.NIS.OriginalBusNames,"scd"))
+%             NameWithscd1=~cellfun('isempty',strfind(obj.NIS.OriginalBusNames,"pohja"))            
+%              for aa=1:obj.NumberofBuses
+%                  BusName=string(obj.NIS.OriginalBusNames(aa))
+%                  if NameWithscd(aa,1)==1 || strcmp(BusName,"ovspt1") || NameWithscd1(aa,1)==1
+%                      labelnode(h,aa,aa);
+%                  end
+%                  if strcmp(BusName,"scd_101990") || strcmp(BusName,"scd_101818")|| strcmp(BusName,"scd_101852")|| strcmp(BusName,"scd_101961")|| strcmp(BusName,"scd_101962")|| strcmp(BusName,"scd_101965")|| strcmp(BusName,"scd_101985")|| strcmp(BusName,"scd_101986")|| strcmp(BusName,"scd_101990")|| strcmp(BusName,"scd_101996")|| strcmp(BusName,"scd_103911")
+%                      highlight(h,aa,'NodeColor','red')
+% %                      labelnode(h,aa,aa);
+%                  end
+%                   if strcmp(BusName,"scd_101988") || strcmp(BusName,"scd_101995") || strcmp(BusName,"scd_102001")
+%                       highlight(h,aa,'NodeColor','green')
+% %                       labelnode(h,aa,aa);
+%                   end
+%              end
+%             
             a=obj.NIS.Bus(1,1);
             ShortPathR=struct;
             for aa=1:1:obj.NumberofBuses
@@ -940,16 +989,17 @@ classdef PredictiveGridOptimization < handle
                         CommonResistance=0;
                         bb=ShortPathR(aa).BusNumbers;
                         cc=ShortPathR(j).BusNumbers;
-                        n=length(cc);
-                        Counter=0;
-                        for k=1:1:n
-                            common=find(cc(k)==bb,1);
-                            if ~isempty(common)
-                                Counter=Counter+1;
-                                CommonNodes(Counter,1)=cc(k);
-                            end
-                        end
-                        if Counter==0
+%                         n=length(cc);
+%                         Counter=0;
+%                         for k=1:1:n
+%                             common=find(cc(k)==bb,1);
+%                             if ~isempty(common)
+%                                 Counter=Counter+1;
+%                                 CommonNodes(Counter,1)=cc(k);
+%                             end
+%                         end
+                        CommonNodes=intersect(bb,cc);
+                        if isempty(CommonNodes)                    %Counter==0
                             CommonResistance=0;
                         else
                             c=length(CommonNodes);
@@ -964,6 +1014,7 @@ classdef PredictiveGridOptimization < handle
                         end
                     SensitivityMatrixR(aa,j)=CommonResistance;
                     SensitivityMatrixX(aa,j)=CommonReactance*i;
+                    clear CommonNodes
                     end
                 end
             end
@@ -1000,51 +1051,22 @@ classdef PredictiveGridOptimization < handle
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 8
         
         function CISAnalysis(obj)
-            obj.State='Busy';
-            obj.CIS.ResourceId=obj.InboundMessage.ResourceId;
-            obj.CIS.CustomerId=obj.InboundMessage.CustomerId;
-            obj.CIS.BusName=obj.InboundMessage.BusName;
-            
-            disp('Initialization of the Customer Information system was done')
-            disp(['SimulationId:' obj.SimulationId])
-            disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
-            obj.CISAnalysisFlag=1;
-            obj.State='Free';
-            obj.StatusReadiness;
-        end
+                obj.State='Busy';
+                obj.CIS.ResourceId=obj.InboundMessage.ResourceId;
+                obj.CIS.CustomerId=obj.InboundMessage.CustomerId;
+                obj.CIS.BusName=obj.InboundMessage.BusName;
 
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 9
-
-        function ForecastedDataManagement(obj)
-            % making the structure of the Voltage and current forecasts with random values
-            obj.VoltageForecasts=table;
-            obj.VoltageForecasts.Time=["2020-06-25T00:00:00Z";"2020-06-25T06:00:00Z";"2020-06-25T06:10:00Z"]; % the values here are just an example to fill the table
-            obj.VoltageForecasts.Voltage=[126;128;129];
-            obj.VoltageForecasts.Violation=[-0.1;0.05;00.03];
-            obj.VoltageForecasts.BusNumber(:,:)=3;
-            obj.VoltageForecasts.BusName(:,:)="sourcebus";
-            obj.VoltageForecasts.Node=[1;2;3];
-            obj.VoltageForecasts.Angle(:,:)=13;
-            obj.VoltageForecasts.Status(:,:)="unacceptable";
-            obj.VoltageForecasts.VioDirection(:,:)=["under";"over";""];
-            obj.VoltageForecasts.CongestionNumber(:,:)=0;
-                
-                
-            obj.CurrentForecasts=table;
-            obj.CurrentForecasts.Time="2020-06-25T00:00:00Z";
-            obj.CurrentForecasts.DeviceId="Transformer1";
-            obj.CurrentForecasts.Phase=1;
-            obj.CurrentForecasts.MagnitudeSendingEnd=126;
-            obj.CurrentForecasts.MagnitudeReceivingEnd=110;
-            obj.CurrentForecasts.AngleSendingEnd=22;
-            obj.CurrentForecasts.AngleReceivingEnd=11;
-            obj.CurrentForecasts.StatusSendingEnd="acceptable";
-            obj.CurrentForecasts.StatusReceivingEnd="acceptable";
-            obj.CurrentForecasts.ViolationSendingEnd=0;
-            obj.CurrentForecasts.ViolationReceivingEnd=0;
+                disp('Initialization of the Customer Information system was done')
+                disp(['SimulationId:' obj.SimulationId])
+                disp('%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%')
+                obj.CISAnalysisFlag=1;
+                obj.State='Free';
+            if obj.NISBranchAnalysisFlag==1 && obj.NISBusAnalysisFlag==1
+                obj.SensitivityAnalysis;
+            end
         end
         
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 10         
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 9         
                         
         function FlexibilityNeed(obj)
            
@@ -1052,7 +1074,7 @@ classdef PredictiveGridOptimization < handle
            VolVioNum=length(obj.VoltageForecasts.Time);
            k=0;
            for i=1:1:VolVioNum   
-               VolVioSameTime=find(obj.VoltageForecasts.Time(i)==obj.VoltageForecasts.Time(:));
+               VolVioSameTime=find(string(obj.VoltageForecasts.Time(i))==string(obj.VoltageForecasts.Time(:)));
                FirstRow=VolVioSameTime(1,1);
                if i==1
                   FirstRowOld=0;
@@ -1070,7 +1092,7 @@ classdef PredictiveGridOptimization < handle
             
            First1=0;
            for i=1:1:VolVioNum   
-               VolVioSameTime=find(obj.VoltageForecasts.Time(i)==obj.VoltageForecasts.Time(:));
+               VolVioSameTime=find(string(obj.VoltageForecasts.Time(i))==string(obj.VoltageForecasts.Time(:)));
                First=VolVioSameTime(1,1);
                End=VolVioSameTime(end,1);
                if ~isequal(First,First1)
@@ -1276,7 +1298,6 @@ classdef PredictiveGridOptimization < handle
                for k=1:1:obj.NumberofBuses   % relative sensitivity calculation needed for determining the size of network suitable for flexibility need
                    RS(k,1)=obj.SensitivityMatrixR(k,BusNumber)/obj.SensitivityMatrixR(BusNumber,BusNumber);
                end
-               
                for k=1:1:obj.NumberofBuses  % Determining buses that has impact on congestion area
                    if (RS(k,1)<obj.RS)
                        RS(k,1)=0;
@@ -1321,10 +1342,11 @@ classdef PredictiveGridOptimization < handle
                     end
                end
                clear ss
+               CustomerIds=string(CustomerIds);
                %%%%% Storing the flex need
                
                 Rows=find(obj.VoltageForecasts.CongestionNumber==i);
-                obj.FlexNeedDMS(i).ActivationTime=obj.VoltageForecasts.Time(Rows(1));
+                obj.FlexNeedDMS(i).ActivationTime=string(obj.VoltageForecasts.Time(Rows(1)));
                 obj.FlexNeedDMS(i).Duration.Value=60; % assuming that flex duration is always 60 Mins
                 obj.FlexNeedDMS(i).Duration.UnitOfMeasure="Minute";
                 if obj.VoltageForecasts.VioDirection(Rows(1))=="over"
@@ -1333,9 +1355,13 @@ classdef PredictiveGridOptimization < handle
                     obj.FlexNeedDMS(i).Direction="upregulation";
                 end
                 obj.FlexNeedDMS(i).RealPowerMin.Value=RealPowerMin/1000; % Divided by 1000 to make it kW
+%                 obj.FlexNeedDMS(i).RealPowerMin.Value=1; % just for testing with Olli
+
                 obj.FlexNeedDMS(i).RealPowerMin.UnitOfMeasure="kW";
                 
                 obj.FlexNeedDMS(i).RealPowerRequest.Value=RealPowerRequest/1000; % Divided by 1000 to make it kW
+%                 obj.FlexNeedDMS(i).RealPowerRequest.Value=1; % just for testing with Olli
+               
                 obj.FlexNeedDMS(i).RealPowerRequest.UnitOfMeasure="kW";
                 
                 
@@ -1352,8 +1378,10 @@ classdef PredictiveGridOptimization < handle
                     s = strcat(obj.SourceProcessId,'-',t);
 %                 s=num2str(i)
                 obj.FlexNeedDMS(i).CongestionId=s;
-                obj.FlexNeedDMS(i).BidResolution.Value=5;
+%                 obj.FlexNeedDMS(i).BidResolution.Value=5;
+                obj.FlexNeedDMS(i).BidResolution.Value=3;
                 obj.FlexNeedDMS(i).BidResolution.UnitOfMeasure="kW"; 
+                obj.FlexNeedDMS(i).OfferId="None";
                 
                 clear Congestion CustomerIds BusNames
            end
@@ -1453,37 +1481,59 @@ classdef PredictiveGridOptimization < handle
                     end
                 end 
             end
+            obj.FlexNeedMarket=[];
             obj.FlexNeedMarket=obj.FlexNeedDMS;
             for i=1:1:length(obj.FlexNeedMarket)% there is a difference between flex needs in DMS and what is asked from Market
-                obj.FlexNeedMarket(i).RealPowerMin.Value=5; % It allows participation of small scale Flex.
+                obj.FlexNeedMarket(i).RealPowerMin.Value=3; % It allows participation of small scale Flex.
                 obj.FlexNeedMarket(i).RealPowerRequest.Value=(obj.FNM)*(obj.FlexNeedDMS(i).RealPowerRequest.Value);
-                if obj.FlexNeedMarket(i).RealPowerRequest.Value<5
-                    obj.FlexNeedMarket(i).RealPowerRequest.Value=5;
+                obj.FlexNeedMarket(i).OfferCount=0;
+                obj.FlexNeedMarket(i).NumOfReceivedOffers=0;
+                obj.FlexNeedMarket(i).Status="Not received offers yet";
+                if obj.FlexNeedMarket(i).RealPowerRequest.Value<3
+                    obj.FlexNeedMarket(i).RealPowerRequest.Value=3;
                 end
             end
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% just
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% for
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% testing
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% with
+            %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% OLLI
+%             for i=1:1:length(obj.FlexNeedMarket)% there is a difference between flex needs in DMS and what is asked from Market
+%                 obj.FlexNeedMarket(i).RealPowerMin.Value=1; % It allows participation of small scale Flex.
+%                 obj.FlexNeedMarket(i).RealPowerRequest.Value=1;
+%                 obj.FlexNeedMarket(i).OfferCount=0;
+%                 obj.FlexNeedMarket(i).NumOfReceivedOffers=0;
+%                 obj.FlexNeedMarket(i).Status="Not received offers yet";
+%                 obj.FlexNeedMarket(i).OfferIds="None";
+% %                 if obj.FlexNeedMarket(i).RealPowerRequest.Value<5
+% %                     obj.FlexNeedMarket(i).RealPowerRequest.Value=5;
+% %                 end
+%             end
+            
+            
+            obj.FlexNeedMarket=struct2table(obj.FlexNeedMarket);
             
             for i=1:length(obj.FlexNeedDMS)   
                 if ~strcmp(obj.FlexNeedDMS(i).CustomerIds,"None")
-                   obj.CustomerIdExistanceFlag=1; 
+                   obj.CustomerIdExistanceFlag=1;   % there are CustomerIds within the congestion area
+                else
+                   obj.CustomerIdExistanceFlag=2;   % there isnot any CustomerId within the congestion area
                 end
             end
             
             FlexNeedsssss=struct2table(obj.FlexNeedDMS)
-            SavedFlexNeed=jsonencode(obj.FlexNeedDMS)
+            SavedFlexNeed=jsonencode(obj.FlexNeedDMS);
             
-            if obj.x>=12 && obj.x<13
+            if obj.CustomerIdExistanceFlag==1
                 disp('flex need calculation was done and ready to be forwarded')
-                obj.FlexNeedTimeFlag=1;
-                if obj.CustomerIdExistanceFlag==1  
-                    FlexibilityNeedForwarding(obj);   %  forwarding the flex needs to LFM
-                end
+                FlexibilityNeedForwarding(obj);   %  forwarding the flex needs to LFM
             else
-               disp('Although flex need calculation is done, it is not the right time for requesting')
-               obj.StatusReadiness;
+                disp('flex need calculation was done but there is no customerId within the congestion zone')
+                obj.StatusReadiness;    
             end
        end
        
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 11          
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 10          
        
         function FlexibilityNeedForwarding(obj)
             for i=1:length(obj.FlexNeedDMS)
@@ -1501,14 +1551,19 @@ classdef PredictiveGridOptimization < handle
                         t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
                     obj.AbstractResult.Timestamp=t; % abstract result end
 
-                    obj.AbstractResult.ActivationTime=obj.FlexNeedMarket(i).ActivationTime;
-                    obj.AbstractResult.Duration=obj.FlexNeedMarket(i).Duration;
-                    obj.AbstractResult.Direction=obj.FlexNeedMarket(i).Direction;
-                    obj.AbstractResult.RealPowerMin=obj.FlexNeedMarket(i).RealPowerMin;
-                    obj.AbstractResult.RealPowerRequest=obj.FlexNeedMarket(i).RealPowerRequest;
-                    obj.AbstractResult.CustomerIds=obj.FlexNeedMarket(i).CustomerIds;
-                    obj.AbstractResult.CongestionId=obj.FlexNeedMarket(i).CongestionId;
-                    obj.AbstractResult.BidResolution=obj.FlexNeedMarket(i).BidResolution;
+                    obj.AbstractResult.ActivationTime=obj.FlexNeedMarket(i,:).ActivationTime;
+                    obj.AbstractResult.Duration=obj.FlexNeedMarket(i,:).Duration;
+                    obj.AbstractResult.Direction=obj.FlexNeedMarket(i,:).Direction;
+                    obj.AbstractResult.RealPowerMin=obj.FlexNeedMarket(i,:).RealPowerMin;
+                    obj.AbstractResult.RealPowerRequest=obj.FlexNeedMarket(i,:).RealPowerRequest;
+                        a=numel(obj.FlexNeedDMS(i).CustomerIds);
+                    if a==1
+                        obj.AbstractResult.CustomerIds={obj.FlexNeedDMS(i).CustomerIds};
+                    else
+                        obj.AbstractResult.CustomerIds=obj.FlexNeedDMS(i).CustomerIds;
+                    end
+                    obj.AbstractResult.CongestionId=string(obj.FlexNeedMarket(i,:).CongestionId);
+                    obj.AbstractResult.BidResolution=obj.FlexNeedMarket(i,:).BidResolution;
 
                     MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
                     MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
@@ -1519,141 +1574,137 @@ classdef PredictiveGridOptimization < handle
                 end
             end
             obj.FlexNeedSentFlag=1;
+            disp('Flex needs were sent')
             obj.StatusReadiness;
         end
         
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 12
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 11
         
         function LFMOffers(obj)
             obj.State='Busy';
-%             x=obj.StartTime;
-%             x=char(x);
-%             x=x(12:14);
-%             x=string(x);
-%             x=str2double(x);
-            disp('Offers are coming')
             Offer=[];
-            if obj.x>=12 && obj.x<14   % LFM market is open for 3 hours
+%             if obj.x>=12 && obj.x<=15   % LFM market is open for 3 hours
                 if obj.OfferCounter==0
                     existance=[]; % existance is set empty
                 else
                     existance=find(strcmp(obj.Offer.OfferId,obj.InboundMessage.OfferId));  % To assure that this is a new offer
                 end
                 if isempty(existance) % Only new Offers are stored
-                    obj.OfferCounter=obj.OfferCounter+1;
-                    i=obj.OfferCounter;
-                    Offer.CongestionId=obj.InboundMessage.CongestionId; %
-                    Offer.Price=obj.InboundMessage.Price; %
-                    Offer.OfferId=obj.InboundMessage.OfferId; %
-                    Offer.ActivationTime=obj.InboundMessage.ActivationTime; %
-                    Offer.Duration=obj.InboundMessage.Duration; %
-                    Offer.Direction=obj.InboundMessage.Direction; %
-                    Offer.OfferCount=obj.InboundMessage.OfferCount; %
-                    Offer.RealPower=obj.InboundMessage.RealPower;
-                    Offer.CustomerIds=obj.InboundMessage.CustomerIds;
+                    obj.TotalOfferCounter=obj.TotalOfferCounter+1;
+                    Row=find(strcmp(obj.FlexNeedMarket.CongestionId,string(obj.InboundMessage.CongestionId)));
+                    if ~isempty(Row)
+                        if obj.InboundMessage.OfferCount>0 % When OfferCount is 0, it means there is no offer for that congestion
+                            disp('Non-empty offer is coming')
+                            obj.OfferCounter=obj.OfferCounter+1;
+                            i=obj.OfferCounter;
+                            Offer.CongestionId=string(obj.InboundMessage.CongestionId); %
+                            Offer.Price=obj.InboundMessage.Price; %
+                            Offer.OfferId=string(obj.InboundMessage.OfferId); %
+                            Offer.ActivationTime=obj.InboundMessage.ActivationTime; %
+                            Offer.Duration=obj.InboundMessage.Duration; %
+                            Offer.Direction=string(obj.InboundMessage.Direction); %
+                            Offer.OfferCount=obj.InboundMessage.OfferCount; %
+                            Offer.RealPower=obj.InboundMessage.RealPower;
+                            Offer.CustomerIds=obj.InboundMessage.CustomerIds;
+                            Offer.OfferCount=obj.InboundMessage.OfferCount;
+                            Offer.PricePerkW=0;
 
-                    CorrespondingCongestionNumber=find(strcmp(obj.FlexNeedDMS.CongestionId,Offer.CongestionId));
-                    Offer.CongestionNumber=CorrespondingCongestionNumber;
+                            obj.Offer(i,:)=struct2table(Offer);
 
-%                     CustomerIds=string(obj.FlexNeed(CorrespondingCongestionNumber).CustomerIds)
-%                     for k=1:1:length(CustomerIds)
-%                        if isfield(obj.InboundMessage.CustomerIds,CustomerIds(k))
-%                            Offer.CustomerId(k)=CustomerIds(k);
-%                        end
-%                     end
-                    obj.Offer(i)=Offer;  % Storing the received offer in Offer propoerty
-                    
-                    % For ready message
-                    
-                    for k=1:1:length(obj.FlexNeedDMS)
-                       Row=find(strcmp(obj.Offer.CongestionId,obj.FlexNeedDMS(k).CongestionId));
-                       if ~isempty(Row)
-                            ExpectedCustomerIds=obj.FlexNeedDMS(k).CustomerIds
-                            ExpectedNumCustomerIds=length(ExpectedCustomerIds)   % It contains the min number of CustomerIds
-                            for m=1:1:length(Row)    % if OfferCount>1, then more CustomerIds should be received
-                                OfferCount=obj.Offer(Row(m)).OfferCount
-                                if OfferCount>1
-                                    CustomerIds=obj.Offer(Row(m)).CustomerIds
-                                    CustomerIdsNum=length(CustomerIds)
-                                    ExpectedNumCustomerIds=(OfferCount-1)*CustomerIdsNum+ExpectedNumCustomerIds;
-                                end
+%                             Row=find(strcmp(obj.FlexNeedMarket.CongestionId,string(obj.Offer(i,:).CongestionId)))
+                            obj.FlexNeedMarket(Row,:).OfferCount=obj.Offer(i,:).OfferCount;
+                            obj.FlexNeedMarket(Row,:).NumOfReceivedOffers=obj.FlexNeedMarket(Row,:).NumOfReceivedOffers+1;
+                            if obj.FlexNeedMarket(Row,:).OfferCount==obj.FlexNeedMarket(Row,:).NumOfReceivedOffers
+                                obj.FlexNeedMarket(Row,:).Status="All offers have been received";                            
                             end
-                            CustomerIdsNum=0;
-                            for m=1:1:length(Row) % calculating the number of received CustomerIds
-                                CustomerIds=obj.Offer(Row(m)).CustomerIds;
-                                CustomerIdsNum=length(CustomerIds)+CustomerIdsNum;
-                            end
-                            if CustomerIdsNum==ExpectedNumCustomerIds
-                                obj.OfferReceivedFlag=1;
-                            else
-                                obj.OfferReceivedFlag=0;
-                                break;
-                            end
-                       else
-                            obj.OfferReceivedFlag=0;
-                            break;
-                       end
+                        else
+                            disp('Empty offer is coming')
+%                             Row=find(strcmp(obj.FlexNeedMarket.CongestionId,string(obj.InboundMessage.CongestionId)));
+%                             if ~isempty(Row)
+                            obj.FlexNeedMarket(Row,:).OfferCount=0;
+                            obj.FlexNeedMarket(Row,:).NumOfReceivedOffers=obj.FlexNeedMarket(Row,:).NumOfReceivedOffers+1;
+                            obj.FlexNeedMarket(Row,:).Status="All offers have been received";
+%                             end
+                        end
                     end
                 end
-                       
-                if obj.OfferReceivedFlag==1
-                    if obj.FlexNeedFlag==1
-                        if obj.x==14          % Making decision should happen at 16 every day to assure that all Flex have participated in the LFM.
-                            obj.OfferSelectionTimeFlag=1;
+                        
+                Rows=find(strcmp(obj.FlexNeedMarket.Status,"All offers have been received"));
+                if length(Rows)==height(obj.FlexNeedMarket)
+                    obj.OfferReceivedFlag=1;
+                    if obj.OfferCounter==0
+                        disp('All received offers are empty!');
+                        obj.EmptyOffersFlag=1;
+                    end
+                    if obj.x==(obj.MarketClosingTime)          
+                        obj.OfferSelectionTimeFlag=1;
+                        if obj.EmptyOffersFlag==0
                             obj.OfferSelection;   % Decision making
                         else
                             obj.StatusReadiness;
                         end
+                    else
+                        obj.OfferSelectionTimeFlag=2;
+                        obj.StatusReadiness;
                     end
                 end
+                clear Rows
+%             end
+        end
+        
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 12
+        
+        function OfferSelection(obj)
+            for i=1:1:height(obj.FlexNeedMarket)
+                if obj.FlexNeedMarket(i,:).OfferCount>0  % empty offers are not analysed
+                   Rows=find(strcmp(obj.Offer.CongestionId,obj.FlexNeedMarket(i,:).CongestionId));
+                   if ~isempty(Rows)
+                       NumOfOffers=length(Rows);
+                       TempOffer=table;
+                       if NumOfOffers>1
+                           for k=1:1:NumOfOffers
+                               obj.Offer(Rows(k),:).PricePerkW=obj.Offer(Rows(k),:).Price.Value/obj.Offer(Rows(k),:).RealPower.Series.Regulation.Values;
+                               TempOffer(k,:)=obj.Offer(Rows(k),:);
+                           end
+                           TempOffer=sortrows(TempOffer,10);  % the table is sorted only based on the values og column 10 (flex price per kW)
+                           OfferedRealPower=0;
+                           for m=1:1:NumOfOffers
+                                OfferedRealPower=TempOffer(m,:).RealPower.Series.Regulation.Values+OfferedRealPower;
+                                if OfferedRealPower>=obj.FlexNeedDMS(i).RealPowerRequest.Value
+                                    OfferId(m,1)=TempOffer(m,:).OfferId;
+                                    obj.FlexNeedDMS(i).OfferId=OfferId; % selection of the cheapest offer
+                                    obj.OfferSelectedFlag=1;
+                                    break;
+                                else
+                                    OfferId(m,1)=TempOffer(m,:).OfferId;
+                                    obj.FlexNeedDMS(i).OfferId=OfferId;
+                                %   OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
+                                    obj.OfferSelectedFlag=1;
+                                end
+                           end
+                       else % in this case, there is only one offer that will be taken. something is better than nothing!
+                           obj.FlexNeedDMS(i).OfferId=obj.Offer(Rows(1),:).OfferId;
+                           obj.OfferSelectedFlag=1;
+                       end
+                   end
+                end
+                clear OfferId
+            end
+            
+            
+            if obj.OfferSelectedFlag==1
+                obj.OfferSelectionForwading;
+            else
+                obj.OfferSelectedFlag=2;
+                obj.StatusReadiness;
             end
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 13
         
-        function OfferSelection(obj)
-            for i=1:1:length(obj.FlexNeedDMS)
-               Rows=find(strcmp(obj.Offer.CongestionId,obj.FlexNeedDMS(i).CongestionId));
-               if ~isempty(Rows)
-                   NumOfOffers=length(Rows);
-                   Offer=[];
-                   if NumOfOffers>1
-                       for k=1:1:NumOfOffers
-                           Offer(k)=obj.Offer(Rows(k));
-                       end
-                       Offer=sortrows(Offer);
-                       OfferedRealPower=0;
-                       for m=1:1:NumOfOffers
-                            OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
-                            if OfferedRealPower>=obj.FlexNeedDMS(i).RealPowerRequest
-                                obj.FlexNeedDMS(i).OfferId(m)=Offer(m).OfferId; % selection of the cheapest offer
-                                obj.OfferSelectedFlag=1;
-                                break;
-                            else
-                                obj.FlexNeedDMS(i).OfferId(m)=Offer(m).OfferId;
-                            %   OfferedRealPower=Offer(m).RealPower.Series.Regulation.Values+OfferedRealPower;
-                                obj.OfferSelectedFlag=1;
-                            end
-                       end
-                   else % in this case, there is only one offer that will be taken. something is better than nothing!
-                       obj.FlexNeedDMS(i).OfferId=obj.Offer(Rows(1));  
-                       obj.OfferSelectedFlag=1;
-                   end
-               end
-            end
-            if obj.OfferSelectedFlag==1
-                obj.OfferSelectionForwading;
-            else
-                obj.StatusReadiness;
-            end
-        end
-        
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 14
-        
         function OfferSelectionForwading(obj)
-            NumFlexNeeds=length(obj.FlexNeedDMS);
-            for i=1:1:NumFlexNeeds
-               if ~isempty (obj.FlexNeedDMS(i).OfferId)
+            for i=1:1:length(obj.FlexNeedDMS)
+               if ~strcmp(obj.FlexNeedDMS(i).OfferId,"None")
                     obj.AbstractResult.Type='SelectedOffer';
                     obj.AbstractResult.SimulationId=obj.SimulationId{1};
                     obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
@@ -1665,8 +1716,16 @@ classdef PredictiveGridOptimization < handle
                         t = datetime('now', 'TimeZone', 'UTC');
                         t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
                     obj.AbstractResult.Timestamp=t; % abstract result end
-                    obj.AbstractResult.OfferIds=obj.FlexNeedDMS(i).OfferId;
-
+                        a=numel(obj.FlexNeedDMS(i).OfferId);
+                    if a==1
+                        obj.AbstractResult.OfferIds={obj.FlexNeedDMS(i).OfferId};
+                    else
+                        obj.AbstractResult.OfferIds=obj.FlexNeedDMS(i).OfferId; % array of OfferIds
+                    end
+                                        
+                    obj.FlexNeedDMS(i).OfferId
+                    obj.FlexNeedDMS(i).ActivationTime
+                    
                     MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
                     MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
                         a=strcat('SelectedOffer.',obj.MarketId);                        
@@ -1679,7 +1738,7 @@ classdef PredictiveGridOptimization < handle
             obj.StatusReadiness;
         end
         
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 15
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 14
 
         function StatusReadinessGrid(obj)
            if (obj.InboundMessage.EpochNumber==obj.Epoch)
@@ -1701,41 +1760,41 @@ classdef PredictiveGridOptimization < handle
                     disp(['SimulationId:' obj.SimulationId])
                 end
                 
-                % Warning
-                
-                if obj.GridReadinessFlag==1
-                    if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
-                            obj.AbstractResult.Value='warning';
-                            WarningFlag=1;
-                            obj.AbstractResult.Description='Forecasted Voltage values werenot received completely';
-                            disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all voltage values are not received yet')
-                            disp(['SimulationId:' obj.SimulationId])
-                        end
-                    end
-                end
-                if obj.GridReadinessFlag==1
-                    if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
-                            obj.AbstractResult.Value='warning';
-                            WarningFlag=1;
-                            obj.AbstractResult.Description='Forecasted current values werenot received completely';
-                            disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all current values are not received yet')
-                            disp(['SimulationId:' obj.SimulationId])
-                        end
-                    end
-                end
-                if obj.GridReadinessFlag==1
-                    if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
-                        if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
-                            obj.AbstractResult.Value='warning';
-                            WarningFlag=1;
-                            obj.AbstractResult.Description='Neither forecasted votage nor current values were received completely';
-                            disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all voltage and current values are not received yet')
-                            disp(['SimulationId:' obj.SimulationId])
-                        end
-                    end
-                end
+%                 % Warning
+%                 
+%                 if obj.GridReadinessFlag==1
+%                     if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
+%                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
+%                             obj.AbstractResult.Value='warning';
+%                             WarningFlag=1;
+%                             obj.AbstractResult.Description='Forecasted Voltage values werenot received completely';
+%                             disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all voltage values are not received yet')
+%                             disp(['SimulationId:' obj.SimulationId])
+%                         end
+%                     end
+%                 end
+%                 if obj.GridReadinessFlag==1
+%                     if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
+%                         if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
+%                             obj.AbstractResult.Value='warning';
+%                             WarningFlag=1;
+%                             obj.AbstractResult.Description='Forecasted current values werenot received completely';
+%                             disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all current values are not received yet')
+%                             disp(['SimulationId:' obj.SimulationId])
+%                         end
+%                     end
+%                 end
+%                 if obj.GridReadinessFlag==1
+%                     if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
+%                         if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
+%                             obj.AbstractResult.Value='warning';
+%                             WarningFlag=1;
+%                             obj.AbstractResult.Description='Neither forecasted votage nor current values were received completely';
+%                             disp('PGO reported "warning" message to Simulation Manager because it seems that communication is unstable due to arrival of ready message when all voltage and current values are not received yet')
+%                             disp(['SimulationId:' obj.SimulationId])
+%                         end
+%                     end
+%                 end
                 %%%%%
 
                 if ErrorFlag==1
@@ -1764,90 +1823,85 @@ classdef PredictiveGridOptimization < handle
             end
         end
         
-        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 16
+        %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 15
         
         function StatusReadiness(obj) 
            ReadyFlag=0;
            %%%
            if obj.GridReadinessFlag==1 % Grid is ready
-                if obj.FlexNeedFlag==2 % No flex need
+               
+               if obj.LFMOperationFlag==0
                    ReadyFlag=1;
-                   disp('Grid is ready, there is no need for flex')
-                end
+                   disp(['LFM is not open yet. It only works between market opening time and market closing time.'])
+               end
+
+               if obj.FlexNeedFlag==2 
+                   ReadyFlag=1;
+                   disp('There is no need for flex.')
+               end
+          
            %%%
-                if obj.FlexNeedTimeFlag==0 % time for bidding has not occured yet
+                if obj.CustomerIdExistanceFlag==2 % there is no CustomerId within the congestion area
                     ReadyFlag=1;
-                    disp('grid is ready, market is not open yet')
+                    disp('There is no customerId inside the congesiton zones.')
                 end
            %%%
-                if obj.FlexNeedFlag==1 % flex need exist
-                    if obj.FlexNeedTimeFlag==1 % time for bidding has occured
-                        if obj.CustomerIdExistanceFlag==0 % there is no CustomerId within the congestion area
-                            ReadyFlag=1;
-                            disp('Grid is ready, CustomerId inside the congesiton zone do not exist')
-                        end
-                    end
-                end
+           
+%                 if obj.FlexNeedSentFlag==1 
+%                     ReadyFlag=1; 
+%                     disp('Needs have been sent')
+%                 end
            %%%
-                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                    if obj.OfferReceivedFlag==0 % required number of offers have not arrived yet
-                        ReadyFlag=0; % keep listening
-                        disp('Grid is ready, Offers has not received completely')
-                    end
-                end
-           %%% 
-                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                    if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                        if obj.OfferSelectionTimeFlag==0 % Time for offer selection has not occured
-                            ReadyFlag=1;
-                            disp('Grid is ready, Time for selection of offers has not occured')
-                        end
-                    end
-                end
+           
+                 if obj.OfferReceivedFlag==1 && obj.OfferSelectionTimeFlag==2
+                    ReadyFlag=1;
+                    disp('offers have been received but time for offer selection has not yet occured.')
+                 end
            %%%
-                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                    if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                       if  obj.OfferSelectionTimeFlag==1 % Time for offer selection has occured
-                            if obj.OfferSelectedFlag==0 % no offer has been selected
-                                ReadyFlag=1;
-                                disp('Grid is ready, no offer has been selected')
-                            end
-                       end     
-                   end
-                end
+           
+                if obj.OfferSelectionTimeFlag==1 && obj.EmptyOffersFlag==1
+                    ReadyFlag=1;
+                    disp('Although time for offer selection has occured, since all received offers are empty, selection doesnot happen.')
+                end   
            %%%
-                if obj.FlexNeedSentFlag==1 % Flex needs have been sent
-                    if obj.OfferReceivedFlag==1 % required number of offers have arrived
-                        if obj.OfferSelectedFlag==1 % offer selection has been done
-                            if obj.SlectedOfferForwardedFlag==1 % LFM is informed about the selected offers
-                                ReadyFlag=1;
-                                disp('Grid is ready, offer was selected and forwarded to LFM')
-                            end
-                        end
-                    end
+           
+                if obj.OfferSelectedFlag==2
+                    ReadyFlag=1;
+                    disp('Although time for offer selection has occured, no offer were selected in the decision making (OfferSelection).')
+                end
+                      
+                if obj.OfferSelectedFlag==1 && obj.SlectedOfferForwardedFlag==1
+                    ReadyFlag=1;
+                    disp('Offer was selected and forwarded to LFM.')
                 end
            end
+           
            %%%
+
            if ReadyFlag==1
-               obj.AbstractResult.Value='ready';
-               obj.AbstractResult.Type='Status';
-               obj.AbstractResult.SimulationId=obj.SimulationId{1};
-               obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
-               obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
-                    s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));
-               obj.AbstractResult.MessageId=s;
-               obj.AbstractResult.EpochNumber=obj.Epoch;
-               obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
-                    t = datetime('now', 'TimeZone', 'UTC');
-                    t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
-               obj.AbstractResult.Timestamp=t;
-               MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
-               MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
-               obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut);
-                   ss = char(strcat('PgoReady.',string(obj.SourceProcessId))) % just for testing
-               obj.AmqpConnector.sendMessage(ss, MyBytesOut);
-               clear MyBytesOut MyStringOut t s ReadyFlag
-               disp('PGO sends a ready message')
+               if obj.ReadyMessageFlag==0
+                   obj.ReadyMessageFlag=1;
+                   obj.AbstractResult.Value='ready';
+                   obj.AbstractResult.Type='Status';
+                   obj.AbstractResult.SimulationId=obj.SimulationId{1};
+                   obj.AbstractResult.SourceProcessId=obj.SourceProcessId;
+                   obj.MessageCounterOutbound=obj.MessageCounterOutbound+1;
+                        s = strcat('PredictedGridOptimization',num2str(obj.MessageCounterOutbound));
+                   obj.AbstractResult.MessageId=s;
+                   obj.AbstractResult.EpochNumber=obj.Epoch;
+                   obj.AbstractResult.TriggeringMessageIds={obj.InboundMessage.MessageId};
+                        t = datetime('now', 'TimeZone', 'UTC');
+                        t=datestr(t,'yyyy-mm-ddTHH:MM:ss.FFFZ');
+                   obj.AbstractResult.Timestamp=t;
+                   MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
+                   MyBytesOut = MyStringOut.getBytes(java.nio.charset.Charset.forName('UTF-8'));
+                   obj.AmqpConnector.sendMessage('Status.Ready', MyBytesOut);
+                       ss = char(strcat('PgoReady.',string(obj.SourceProcessId))); % just for testing
+                   obj.AmqpConnector.sendMessage(ss, MyBytesOut);
+                   clear MyBytesOut MyStringOut t s ReadyFlag ss
+                   obj.AbstractResult=[];
+                   disp('PGO sends a ready message')
+               end
            end
         end
     end % End of methods
