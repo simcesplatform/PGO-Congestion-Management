@@ -15,7 +15,7 @@ Type: external
 # DockerImage is required attribute for platform managed components.
 # For externally managed components it is ignored.
 # The value should be the name of the Docker image that contains the simulation component.
-DockerImage: procem.ain.rd.tut.fi/simces/my_component_image
+DockerImage: 
 
 # Description is an optional attribute which can contain a description of the component to the simulation platform.
 Description: "Predictive Grid Optimization the SimCes Platform"
@@ -50,8 +50,8 @@ Description: "Predictive Grid Optimization the SimCes Platform"
 Attributes:
 
     # a required starting attribute "AttributeName1" which is passed as the environment variable "ATTRIBUTE_VALUE_1"
-    MonitoredGridName:
-        Optional: false
+    #MonitoredGridName:
+    #    Optional: false
 
     # an optional starting attribute "AttributeName2" with a default value of 123 and
     # is passed as the environment variable name "ATTRIBUTE_VALUE_2"
@@ -74,4 +74,12 @@ Attributes:
     AmberLoadingBaseline:
         Optional: false
     ParticipatingMarketId:
+        Optional: false
+    StatePredictorId:
+        Optional: false
+    MarketOpeningTime:
+        Optional: false
+    MarketClosingTime:
+        Optional: false
+    GridName:
         Optional: false

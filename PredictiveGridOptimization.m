@@ -1,3 +1,9 @@
+% Copyright 2023 Tampere University.
+% This software was developed as a part of doctroal studies of Mehdi Attar, funded by Fortum and Neste Foundation.
+% This source code is licensed under the MIT license. See LICENSE in the repository root directory.
+% This software can only be deployed by SimCES platform. (https://simcesplatform.github.io/)
+% Author: Mehdi Attar <mehdi.attar@tuni.fi>
+%
 classdef PredictiveGridOptimization < handle
     
     properties
@@ -5,7 +11,7 @@ classdef PredictiveGridOptimization < handle
         % Start message
         SimulationSpecificExchange
         SimulationId
-        Grid
+        StatePredictorId
         SourceProcessId
         OptimizationHorizon
         MaxVoltage
@@ -17,6 +23,7 @@ classdef PredictiveGridOptimization < handle
         MarketId
         MarketOpeningTime
         MarketClosingTime
+        GridName
         GR
         GX
         DistancesR
@@ -52,6 +59,7 @@ classdef PredictiveGridOptimization < handle
         NumberOfReceivedCurrentValues
         StartTime
         EndTime
+        Today
         x
         
         % Inbbound/outbound message counter
@@ -78,7 +86,7 @@ classdef PredictiveGridOptimization < handle
         % Flags
         NISBusFlag          
         NISBranchFlag       
-        GridReadinessFlag   
+        StatePredictorReadinessFlag   
         FlexNeedFlag        
         FlexNeedSentFlag    
         OfferSelectedFlag   
@@ -108,11 +116,11 @@ classdef PredictiveGridOptimization < handle
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Constructor
         
-        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime)  
+        function obj = PredictiveGridOptimization(SimulationSpecificExchange,SimulationId,PGOName,MonitoredGridId,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime,Grid)  
             obj.SimulationSpecificExchange = SimulationSpecificExchange; % Start message
             obj.SimulationId = SimulationId;
             obj.SourceProcessId = PGOName;
-            obj.Grid = MonitoredGridId;
+            obj.StatePredictorId = MonitoredGridId;
             obj.RS=RS;
                 obj.RS=1-((obj.RS)/100);
             obj.FNM=FNM+1;
@@ -126,6 +134,7 @@ classdef PredictiveGridOptimization < handle
             obj.MarketId=MarketId;
             obj.MarketOpeningTime=MarketOpeningTime;
             obj.MarketClosingTime=MarketClosingTime;
+            obj.GridName=Grid;
 
             obj.ExpectedNumberOfVoltageForecasts=0;    % Initialization (Epoch 1)
             obj.ExpectedNumberOfVoltageForecasts=0;
@@ -140,7 +149,7 @@ classdef PredictiveGridOptimization < handle
 
             obj.NISBusFlag=0;  % Flag is 1 once the Bus data are receievd
             obj.NISBranchFlag=0;  % Flag is 1 once the Branch data are receievd
-            obj.GridReadinessFlag=0;  % Flag is 1 once the Grid is ready
+            obj.StatePredictorReadinessFlag=0;  % Flag is 1 once the Grid is ready
             obj.FlexNeedFlag=0;      % Flag is 1 once there is a need for flexibility
             obj.CustomerIdExistanceFlag=0; % Flag is 1 once there is at least one CustomerId inside the congestion area
             obj.FlexNeedSentFlag=0;  % Flag is 1 once a flex need is sent to LFM
@@ -176,11 +185,11 @@ classdef PredictiveGridOptimization < handle
 
         function Subscription(obj)
 %             AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('localhost',obj.SimulationSpecificExchange,'guest','guest'); % Based on what is specified in the Start message, PGO listens to that exchange.
-            AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('amqp.ain.rd.tut.fi',obj.SimulationSpecificExchange,'procem-all','simu09LATION');
-            AmqpProps.setSecure(true);
-           % AmqpProps.setSecure(false);
-           % AmqpProps.setPort(5672);   % Default AMQP port
-            AmqpProps.setPort(45671);   % Default AMQP port
+            AmqpProps = fi.procemplus.amqp2math.AmqpPropsManager('localhost',obj.SimulationSpecificExchange,'guest','guest');
+           % AmqpProps.setSecure(true);
+            AmqpProps.setSecure(false);
+            AmqpProps.setPort(5672);   % Default AMQP port
+           % AmqpProps.setPort(45671);   % Default AMQP port
             AmqpProps.setExchangeDurable(false);    % Uncomment this line if settings in the AMQP broker is activated
             AmqpProps.setExchangeAutoDelete(true);  % Uncomment this line if settings in the AMQP broker is activated
             
@@ -189,7 +198,9 @@ classdef PredictiveGridOptimization < handle
             topicsIn(2) = java.lang.String('Status.Ready'); % PGO needs to listen to Status.Ready topic published by of Grid 
             topicsIn(3) = java.lang.String('Status.Error'); % PGO needs to listen to Status.Error topic published by Grid
             topicsIn(4) = java.lang.String('Epoch');    % PGO needs to listen to Epoch topic published by Simulation manager
-            topicsIn(5) = java.lang.String('NetworkForecastState.GridA.Voltage.#'); % PGO needs to listen to NetworkState.Voltage.# topic published by Grid. (# is wild card to receive all voltage data)
+                ss=string(obj.GridName);
+                ss='NetworkForecastState.'+ss+'.Voltage.#';
+            topicsIn(5) = java.lang.String(ss); % PGO needs to listen to NetworkState.Voltage.# topic published by Grid. (# is wild card to receive all voltage data)
 %            topicsIn(6) = java.lang.String('NetworkForecastState.Current.#'); % PGO needs to listen to NetworkState.Current.# topic published by Grid. (# is wild card to receive all voltage data)
             topicsIn(6) = java.lang.String('Init.NIS.NetworkBusInfo');  % PGO needs to listen to Init.NIS.NetworkBusInfo topic published by Grid in the Epoch 1 
             topicsIn(7) = java.lang.String('Init.NIS.NetworkComponentInfo');    % PGO needs to listen to Init.NIS.NetworkComponentInfo topic published by Grid in the Epoch 1
@@ -210,13 +221,14 @@ classdef PredictiveGridOptimization < handle
                 message = obj.AmqpConnector.getMessage();
                 if ~isempty(message)
                     mystr = message.getBody();
-                    str = char(mystr);  %    Making the input into a character array
-                    obj.InboundMessage = jsondecode(str'); % decoding JSON data. please note that jsondecode for Matlab versions 2018 and later receives only row vectors.(that's why str is str')
+                    str = char(mystr)';  %    Making the input into a character array
+                    obj.InboundMessage = jsondecode(str); % decoding JSON data. please note that jsondecode for Matlab versions 2018 and later receives only row vectors.(that's why str is str')
+                    %a=jsondecode(str);
                     clear message mystr str
                     obj.MessageCounterInbound=obj.MessageCounterInbound+1; % inbound message counter
                     obj.Listener;
                 else
-                    pause(1);   % in order not to over load Matlab
+                    pause(0.2);   % in order not to over load Matlab
                 end
                 if strcmp(obj.State,'Stopped')
                    Out=true; 
@@ -266,8 +278,9 @@ classdef PredictiveGridOptimization < handle
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes the Status message for Epoches>0
 
                    if strcmp(obj.InboundMessage.Type,'Status')
-                      if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)      % just analyse the status message that is published by Grid
+                      if strcmp(obj.InboundMessage.SourceProcessId,obj.StatePredictorId)      % just analyse the status message that is published by Grid
                           if obj.InboundMessage.EpochNumber~=0     % For Epoches > 0 
+                              disp(['PGO received "ready" message from ',num2str(obj.StatePredictorId)])
                               obj.StatusReadinessGrid; % one of the requirements of PGO readiness is grid's readiness
                           end
                       end
@@ -286,6 +299,10 @@ classdef PredictiveGridOptimization < handle
                             obj.Epoch=obj.InboundMessage.EpochNumber;              % Making the Epoch number the Object's property
                             obj.StartTime=char(obj.InboundMessage.StartTime);
                             obj.EndTime=char(obj.InboundMessage.StartTime);
+                                x=char(obj.StartTime);
+                                today=x(1:10);
+                            obj.Today=datetime(today,'InputFormat','yyyy-MM-dd');
+                            clear x
                             obj.NumberOfReceivedVoltageValues=0;    % Resetting the number of received forecasted voltage values
                             obj.NumberOfReceivedCurrentValues=0;    % Resetting the number of received forecasted current values
                             obj.MessageCounterOutbound=0;   % Resetting the number of outbound message for each Epoch
@@ -293,13 +310,13 @@ classdef PredictiveGridOptimization < handle
                             obj.OfferCounter=0;
                             obj.TotalOfferCounter=0;
 
-                            obj.GridReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
+                            obj.StatePredictorReadinessFlag=0;  % Resetting the grid readiness flag. The default is 0 showing that the grid is not yet ready.
                             obj.OfferReceivedFlag=0; % Resetting the available offer flag. The defalut is 0 showing that, currently, there is no available offer in the market
                             obj.OfferSelectedFlag=0;  % Resetting the offer selected flag. The default is 0 showing that any offer has not yet been selected duting the running Epoch.
                             obj.FlexNeedSentFlag=0;
+                            obj.EmptyOffersFlag=0;  % Resetting the Flag. The default is 0 in the start of the Epoch.1 shows that all received offers are empty.
                             obj.OfferSelectionTimeFlag=0; % Resetting the flag. The default is 0 showing that the time for selecting the offers has not occured yet.
                             obj.CustomerIdExistanceFlag=0; % Resetting the Flag. The default is 0 in the start of the Epoch. 1 shows that there is CustomerId within the congestion need. 2 means that there is no CustomerId within the flex need.
-                            obj.EmptyOffersFlag=0;     % Resetting the Flag. The default is 0 in the start of the Epoch.1 shows that all received offers are empty.    
                             obj.LFMOperationFlag=0;    % Resetting the Flag. The default is 0 in the start of the Epoch. 1 shows that market is open.
                             obj.ReadyMessageFlag=0;        % Resetting the glag. The default is 0 in the start of the Epoch. 1 shows that the PGO's ready message has been sent.
                             
@@ -322,57 +339,59 @@ classdef PredictiveGridOptimization < handle
                             x=obj.StartTime(12:13);
                             obj.x=str2double(x);
                             clear x
-                            if obj.x>=obj.MarketOpeningTime && obj.x<=obj.MarketClosingTime
-                               obj.LFMOperationFlag=1; 
+                            if obj.x>=obj.MarketOpeningTime && obj.x<obj.MarketClosingTime
+                               obj.LFMOperationFlag=1;
+                               disp('In this epoch, the LFM is open')
                             end
                             if obj.x<obj.MarketOpeningTime || obj.x>obj.MarketClosingTime
                                 obj.FlexNeedFlag=0;     % Resetting the flex need flag. The default is 0 when Epoch starts. The value is 1 when there is a need. The value is 2 there is no flex need.
                                 obj.FlexNeedDMS=[];
                                 obj.FlexNeedDMS=struct;
                             end
-                            
                        end
                     end
 
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Bus data message- NIS
 
                    if strcmp(obj.InboundMessage.Type,'Init.NIS.NetworkBusInfo')
-                       if strcmp(obj.InboundMessage.SourceProcessId,obj.Grid)
+                       %if strcmp(obj.InboundMessage.SourceProcessId,obj.StatePredictorId)
                            if obj.NISBusAnalysisFlag==0 
                             obj.NISBusAnalysis;
                            end
-                       end
+                       %end
                    end
 
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Branch data message- NIS
 
                    if strcmp(obj.InboundMessage.Type,'Init.NIS.NetworkComponentInfo')
-                       if (strcmp(obj.InboundMessage.SourceProcessId,obj.Grid))
+                       %if (strcmp(obj.InboundMessage.SourceProcessId,obj.StatePredictorId))
                            if obj.NISBranchAnalysisFlag==0
                             obj.NISBranchAnalysis;
                            end
-                       end
+                       %end
                    end
 
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid publishes Customer data message- CIS
 
                    if strcmp(obj.InboundMessage.Type,'Init.CIS.CustomerInfo')
-                       if (strcmp(obj.InboundMessage.SourceProcessId,obj.Grid))
+                       %if (strcmp(obj.InboundMessage.SourceProcessId,obj.StatePredictorId))
                            if obj.CISAnalysisFlag==0
                             obj.CISAnalysis;
                            end
-                       end
+                       %end
                    end
 
                 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% When Grid published the network's voltage forecasts
 
                    if strcmp(obj.InboundMessage.Type,'NetworkForecastState.Voltage')
-                       if obj.x==obj.MarketOpeningTime
+                       %if obj.x==obj.MarketOpeningTime
+                       if obj.LFMOperationFlag==1
                            if obj.InboundMessage.Node<4
                                VoltageViolationFlag=0;
                                obj.ReceivedAllVoltageForecastsFlag=0;
                                obj.NumberOfReceivedVoltageValues=obj.NumberOfReceivedVoltageValues+1;
-                               ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
+                               disp(['Voltage Num:' string(obj.NumberOfReceivedVoltageValues)])
+                               %ReceivedVoltageValues=obj.NumberOfReceivedVoltageValues
                                
                                From=1+(obj.OptimizationHorizon*(obj.NumberOfReceivedVoltageValues-1));
                                To=obj.NumberOfReceivedVoltageValues*obj.OptimizationHorizon;
@@ -386,7 +405,7 @@ classdef PredictiveGridOptimization < handle
 %                                end
                                Node=obj.InboundMessage.Node;
                                Row = find(string(obj.NIS.OriginalBusNames(:,1)) == obj.InboundMessage.Bus); % finding the Row of the Bus
-                               NominalVoltage=(obj.NIS.Bus(Row,10))/sqrt(3);  % kV
+                               NominalVoltage=obj.NIS.Bus(Row,10);  % kV
                                Vmin1=(obj.MinVoltage+obj.LowerAmberBandVoltage)*NominalVoltage;  % kV
                                Vmax1=(obj.MaxVoltage-obj.UpperAmberBandVoltage)*NominalVoltage; % kV
                                Vmin2=obj.MinVoltage*NominalVoltage;  % kV
@@ -451,14 +470,15 @@ classdef PredictiveGridOptimization < handle
                                 %%%%% Deleting the rows without violation when all the voltage forecasts are received
 
                                 if obj.NumberOfReceivedVoltageValues==(3*obj.NumberofBuses)
-                                    disp('All voltages were received')
+                                    disp('All voltage forecasts were received')
                                     obj.ReceivedAllVoltageForecastsFlag=1;
                                     n=length(obj.VoltageForecasts.Time);   % It gives the number of violations
-                                    x=char(obj.StartTime);
-                                    Today=x(1:10);
-                                    Today=datetime(Today,'InputFormat','yyyy-MM-dd');
-                                    NextDayStart=dateshift(Today,'start','day','next');  
-                                    NextDayEnd=dateshift(NextDayStart,'start','day','next');
+%                                     x=char(obj.StartTime);
+%                                     Today=x(1:10);
+%                                     Today=datetime(Today,'InputFormat','yyyy-MM-dd');
+%                                     NextDayStart=dateshift(Today,'start','day','next');  
+%                                     NextDayEnd=dateshift(NextDayStart,'start','day','next');
+                                    
 %                                     if ~isempty(n)
 %                                         for i=1:1:length(obj.VoltageForecasts.Time)
 %                                             if obj.VoltageForecasts.Violation(i)~=0
@@ -479,19 +499,19 @@ classdef PredictiveGridOptimization < handle
                                         for i=1:1:length(obj.VoltageForecasts.Time)
                                             if obj.VoltageForecasts.Violation(i)~=0
                                                 day=char(obj.VoltageForecasts.Time(i));
-                                                time=str2double(day(12:13));
+                                                %time=str2double(day(12:13));
                                                 day=day(1:10);
                                                 day=datetime(day,'InputFormat','yyyy-MM-dd');
-                                                if day==Today
-                                                    if time<=obj.MarketClosingTime
+                                                if day==obj.Today
+                                                    %if time<=obj.MarketClosingTime
                                                         obj.VoltageForecasts.Violation(i)=0;
-                                                    end
+                                                    %end
                                                 end
-                                                if day==NextDayStart
-                                                    if time>=obj.MarketOpeningTime  
-                                                        obj.VoltageForecasts.Violation(i)=0;  % Deleting the rows outsidet the market operation window
-                                                    end
-                                                end
+%                                                 if day==NextDayStart
+%                                                     if time>=obj.MarketOpeningTime  
+%                                                         obj.VoltageForecasts.Violation(i)=0;  % Deleting the rows outsidet the market operation window
+%                                                     end
+%                                                 end
                                             end
                                         end
                                     end
@@ -507,7 +527,7 @@ classdef PredictiveGridOptimization < handle
                                         obj.VoltageForecasts=struct2table(obj.VoltageForecasts);
                                         obj.VoltageForecasts=s;
                                         
-                                        clear x s
+                                        clear s
                                         % voltages that donot have violation are deleted
                                     end
                                     RowWithVio=find(obj.VoltageForecasts.Violation~=0);
@@ -1156,7 +1176,7 @@ classdef PredictiveGridOptimization < handle
                    CongestionLength=length(Congestion.CongestionNumber);
                    Change="False";
 
-                   BusNumber=Congestion.BusNumber(1);
+                   BusNumber=Congestion.BusNumber(1);    % we take the bus with the highest violation
                    BasicCongestionNum=Congestion.CongestionNumber(1);
                    RS=zeros(obj.NumberofBuses,1);
                    for k=1:1:obj.NumberofBuses   % relative sensitivity calculation needed for determining the size of network suitable for flexibility need
@@ -1510,8 +1530,14 @@ classdef PredictiveGridOptimization < handle
 % %                 end
 %             end
             
-            
-            obj.FlexNeedMarket=struct2table(obj.FlexNeedMarket);
+            try
+                obj.FlexNeedMarket=struct2table(obj.FlexNeedMarket);   % when structure is only 1*1, the struct2table throws an error. follow here: https://se.mathworks.com/matlabcentral/answers/277584-possible-bug-in-struct2table
+            catch
+               largeStruct = repmat(obj.FlexNeedMarket,2,1);  % in order to avoid an error for 1*1 structures, then we add another row and after making a table remove the second row
+               table = struct2table(largeStruct);
+               obj.FlexNeedMarket = table(1,:);
+               clear table
+            end
             
             for i=1:length(obj.FlexNeedDMS)   
                 if ~strcmp(obj.FlexNeedDMS(i).CustomerIds,"None")
@@ -1521,8 +1547,9 @@ classdef PredictiveGridOptimization < handle
                 end
             end
             
-            FlexNeedsssss=struct2table(obj.FlexNeedDMS)
-            SavedFlexNeed=jsonencode(obj.FlexNeedDMS);
+            %FlexNeedsssss=struct2table(obj.FlexNeedDMS)
+            %SavedFlexNeed=jsonencode(obj.FlexNeedDMS);
+            a=jsonencode(obj.FlexNeedMarket) % just to show on the screen
             
             if obj.CustomerIdExistanceFlag==1
                 disp('flex need calculation was done and ready to be forwarded')
@@ -1582,8 +1609,19 @@ classdef PredictiveGridOptimization < handle
         
         function LFMOffers(obj)
             obj.State='Busy';
-            Offer=[];
-%             if obj.x>=12 && obj.x<=15   % LFM market is open for 3 hours
+            ReceivedOffer=struct;
+            
+            NextDayStart=dateshift(obj.Today,'start','day','next');
+            
+            if obj.InboundMessage.OfferCount>0
+                OfferDay=char(obj.InboundMessage.ActivationTime);
+                OfferDay=OfferDay(1:10);
+                OfferDay=datetime(OfferDay,'InputFormat','yyyy-MM-dd');
+            else
+                OfferDay = NextDayStart;
+            end
+            
+            if NextDayStart==OfferDay && obj.LFMOperationFlag==1
                 if obj.OfferCounter==0
                     existance=[]; % existance is set empty
                 else
@@ -1597,19 +1635,35 @@ classdef PredictiveGridOptimization < handle
                             disp('Non-empty offer is coming')
                             obj.OfferCounter=obj.OfferCounter+1;
                             i=obj.OfferCounter;
-                            Offer.CongestionId=string(obj.InboundMessage.CongestionId); %
-                            Offer.Price=obj.InboundMessage.Price; %
-                            Offer.OfferId=string(obj.InboundMessage.OfferId); %
-                            Offer.ActivationTime=obj.InboundMessage.ActivationTime; %
-                            Offer.Duration=obj.InboundMessage.Duration; %
-                            Offer.Direction=string(obj.InboundMessage.Direction); %
-                            Offer.OfferCount=obj.InboundMessage.OfferCount; %
-                            Offer.RealPower=obj.InboundMessage.RealPower;
-                            Offer.CustomerIds=obj.InboundMessage.CustomerIds;
-                            Offer.OfferCount=obj.InboundMessage.OfferCount;
-                            Offer.PricePerkW=0;
+                            ReceivedOffer.CongestionId=string(obj.InboundMessage.CongestionId); %
+                            ReceivedOffer.Price=obj.InboundMessage.Price; %
+                            ReceivedOffer.OfferId=string(obj.InboundMessage.OfferId); %
+                            ReceivedOffer.ActivationTime=obj.InboundMessage.ActivationTime; %
+                            ReceivedOffer.Duration=obj.InboundMessage.Duration; %
+                            ReceivedOffer.Direction=string(obj.InboundMessage.Direction); %
+                            ReceivedOffer.OfferCount=obj.InboundMessage.OfferCount; %
+                            ReceivedOffer.RealPower=obj.InboundMessage.RealPower;
+%                             num = numel(obj.InboundMessage.CustomerIds);
+%                             if num > 1
+%                                 for w=1:num
+%                                     ReceivedOffer.CustomerIds(w)=string(obj.InboundMessage.CustomerIds(w))
+%                                 end
+%                             else
+                            ReceivedOffer.CustomerIds=obj.InboundMessage.CustomerIds;
+% %                             end
+                            ReceivedOffer.OfferCount=obj.InboundMessage.OfferCount;
+                            ReceivedOffer.PricePerkW=0;
 
-                            obj.Offer(i,:)=struct2table(Offer);
+
+%                             try
+                            obj.Offer(i,:)=struct2table(ReceivedOffer);
+%                             catch
+%                                 aa = repmat(ReceivedOffer,2,1);
+%                                 class(aa)
+%                                 bb = struct2table(aa)
+%                                 class(bb)
+%                                 obj.Offer(i,:) = bb(1,:)
+%                             end
 
 %                             Row=find(strcmp(obj.FlexNeedMarket.CongestionId,string(obj.Offer(i,:).CongestionId)))
                             obj.FlexNeedMarket(Row,:).OfferCount=obj.Offer(i,:).OfferCount;
@@ -1628,7 +1682,7 @@ classdef PredictiveGridOptimization < handle
                         end
                     end
                 end
-                        
+
                 Rows=find(strcmp(obj.FlexNeedMarket.Status,"All offers have been received"));
                 if length(Rows)==height(obj.FlexNeedMarket)
                     obj.OfferReceivedFlag=1;
@@ -1636,7 +1690,7 @@ classdef PredictiveGridOptimization < handle
                         disp('All received offers are empty!');
                         obj.EmptyOffersFlag=1;
                     end
-                    if obj.x==(obj.MarketClosingTime)          
+                    if obj.x==(obj.MarketOpeningTime)          
                         obj.OfferSelectionTimeFlag=1;
                         if obj.EmptyOffersFlag==0
                             obj.OfferSelection;   % Decision making
@@ -1649,7 +1703,7 @@ classdef PredictiveGridOptimization < handle
                     end
                 end
                 clear Rows
-%             end
+            end
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 12
@@ -1723,7 +1777,7 @@ classdef PredictiveGridOptimization < handle
                         obj.AbstractResult.OfferIds=obj.FlexNeedDMS(i).OfferId; % array of OfferIds
                     end
                                         
-                    obj.FlexNeedDMS(i).OfferId
+                    %obj.FlexNeedDMS(i).OfferId
                     obj.FlexNeedDMS(i).ActivationTime
                     
                     MyStringOut = java.lang.String(jsonencode(obj.AbstractResult));
@@ -1748,11 +1802,11 @@ classdef PredictiveGridOptimization < handle
                 %%%%%
 
                 if strcmp(obj.InboundMessage.Value,'ready')
-                    obj.GridReadinessFlag=1;
-                    disp('Grid is ready')
+                    obj.StatePredictorReadinessFlag=1;
+                    disp('Grid Forecaster is ready')
                 end
                 if strcmp(obj.InboundMessage.Value,'error')
-                    obj.GridReadinessFlag=0;
+                    obj.StatePredictorReadinessFlag=0;
                     obj.AbstractResult.Value='error';
                     ErrorFlag=1;
                     obj.AbstractResult.Description='Grid reported Error';
@@ -1762,7 +1816,7 @@ classdef PredictiveGridOptimization < handle
                 
 %                 % Warning
 %                 
-%                 if obj.GridReadinessFlag==1
+%                 if obj.StatePredictorReadinessFlag==1
 %                     if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
 %                         if (obj.ExpectedNumberOfCurrentForecasts==obj.NumberOfReceivedCurrentValues)
 %                             obj.AbstractResult.Value='warning';
@@ -1773,7 +1827,7 @@ classdef PredictiveGridOptimization < handle
 %                         end
 %                     end
 %                 end
-%                 if obj.GridReadinessFlag==1
+%                 if obj.StatePredictorReadinessFlag==1
 %                     if ((obj.NumberofBuses*3)==obj.NumberOfReceivedVoltageValues)
 %                         if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
 %                             obj.AbstractResult.Value='warning';
@@ -1784,7 +1838,7 @@ classdef PredictiveGridOptimization < handle
 %                         end
 %                     end
 %                 end
-%                 if obj.GridReadinessFlag==1
+%                 if obj.StatePredictorReadinessFlag==1
 %                     if ((obj.NumberofBuses*3)~=obj.NumberOfReceivedVoltageValues)
 %                         if (obj.ExpectedNumberOfCurrentForecasts~=obj.NumberOfReceivedCurrentValues)
 %                             obj.AbstractResult.Value='warning';
@@ -1828,7 +1882,7 @@ classdef PredictiveGridOptimization < handle
         function StatusReadiness(obj) 
            ReadyFlag=0;
            %%%
-           if obj.GridReadinessFlag==1 % Grid is ready
+           if obj.StatePredictorReadinessFlag==1 % Grid is ready
                
                if obj.LFMOperationFlag==0
                    ReadyFlag=1;
