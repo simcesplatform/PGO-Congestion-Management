@@ -1,12 +1,16 @@
 %                        PredictiveGridOptimization (PGO) Application System
-% The application system includes the following sub-programs:
-% 1- AmqpConnector . (It listens to the Management exchange)
+% In order to utilize the functionalities in the PGO the user has to execute the AmqpConnector.
+% The total application system includes the following programs:
+% 1- AmqpConnector . (It listens to the Management exchange used by platform manager)
+% Management exchange documentation: https://simcesplatform.github.io/core_exchange-mgmt/#management-exchange
+% Platform manager documentation: https://simcesplatform.github.io/core_platformmanager/
 % 2- ManagementCallback. (It initiates an instance of PredictiveGridOptimization class)
 % 3- PredictiveGridOptimization. (It operates the PredictiveGridOptimization functionalities for a simulation run)
-% Two APIs are used here.
-% 1- the API is autonomuos in a sense that it receives incoming messages irrespective of StateMonitoring workload. The API is used to listen to the Management exchange. 
+
+% Two APIs are used here when listening to incoming messages:
+% 1- the API is autonomuos in a sense that it receives incoming messages irrespective of PGO's workload. The API is used to listen to the Management exchange. 
 % Please visit https://kannisto.github.io/Cocop.AmqpMathToolConnector/
-% 2- the API execution is dependant on the workload of StaeMonitoring. Once the StateMonitoring is idle, a new message could come.
+% 2- the API execution is dependant on the workload of PGO. Once the PGO is idle, a new message could come.
 % Please visit https://github.com/simcesplatform/AmqpMathToolIntegration
 clear all
 clc
