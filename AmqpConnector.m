@@ -52,7 +52,7 @@ amqpPropsM.setExchangeDurable(true);
 amqpPropsM.setExchangeAutoDelete(false);
 topicsIn = javaArray('java.lang.String',1);
 topicsIn(1) = java.lang.String('Start'); 
-amqpConnectorM = eu.cocop.amqp2math.AmqpConnector(amqpPropsM, topicsIn);
+amqpConnectorM = eu.cocop.amqp2math.AmqpConnector(amqpPropsM, topicsIn); % an asynch API to get new messages
 disp('Conected to the management exchange')
 
 % Listener

@@ -208,14 +208,14 @@ classdef PredictiveGridOptimization < handle
                 ss = char(strcat('LFMOffering.',string(obj.SourceProcessId)));
             topicsIn(9) = java.lang.String(ss);    % PGO needs to listen to LFMOffering topic to get its required flexibility
             
-            obj.AmqpConnector = fi.procemplus.amqp2math.AmqpTopicConnectorSync(AmqpProps, topicsIn); % using procemplus API for RabbitMQ broker connection
+            obj.AmqpConnector = fi.procemplus.amqp2math.AmqpTopicConnectorSync(AmqpProps, topicsIn); % using procemplus API for RabbitMQ broker connection. it is a synch API
             disp(['connected to the simulation specific exchange:' obj.SimulationSpecificExchange])
             disp(['SimulationId:' obj.SimulationId])
         end
         
         %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Method 3
         
-        function Out=GetMsg(obj)
+        function Out=GetMsg(obj)    % since we have a synch API, for receiving new messages, we need to call the get function
             while 1>0
                 obj.State='Free';
                 message = obj.AmqpConnector.getMessage();
