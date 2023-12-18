@@ -18,7 +18,7 @@ function ManagementCallback(hObject, eventData)
             fields = fieldnames(PredictiveGridOptimizationBlock);
             PGOName = fields{1,1};
 
-            Grid=PredictiveGridOptimizationBlock.(PGOName).MonitoredGridName;
+            StatePredictorId=PredictiveGridOptimizationBlock.(PGOName).StatePredictorId;
             RS=PredictiveGridOptimizationBlock.(PGOName).RelativeSensitivity;
             FNM=PredictiveGridOptimizationBlock.(PGOName).FlexibilityNeedMargin;
             OptimizationHorizon=PredictiveGridOptimizationBlock.(PGOName).Horizon;
@@ -28,11 +28,12 @@ function ManagementCallback(hObject, eventData)
             LowerAmberBandVoltage=PredictiveGridOptimizationBlock.(PGOName).LowerAmberBandVoltage;
             OverloadingBaseline=PredictiveGridOptimizationBlock.(PGOName).OverloadingBaseline;
             AmberLoadingBaseline=PredictiveGridOptimizationBlock.(PGOName).AmberLoadingBaseline;
-            MarketId=PredictiveGridOptimizationBlock.(PGOName).ParticipatingMarketId;            
+            MarketId=PredictiveGridOptimizationBlock.(PGOName).ParticipatingMarketId    ;        
             MarketOpeningTime=PredictiveGridOptimizationBlock.(PGOName).MarketOpeningTime;
             MarketClosingTime=PredictiveGridOptimizationBlock.(PGOName).MarketClosingTime;
+            Grid=PredictiveGridOptimizationBlock.(PGOName).GridName;
             
-            Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,Grid,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime);
+            Object(NumOfSimRun)=PredictiveGridOptimization(SimulationSpecificExchange,SimulationId(NumOfSimRun),PGOName,StatePredictorId,RS,FNM,OptimizationHorizon,MaxVoltage,MinVoltage,UpperAmberBandVoltage,LowerAmberBandVoltage,OverloadingBaseline,AmberLoadingBaseline,MarketId,MarketOpeningTime,MarketClosingTime,Grid);
 %             Handles{NumOfSimRun} = @() Object(NumOfSimRun).Main;
 %             States{NumOfSimRun}=parfeval(@() Object.Main,1);
             Object(NumOfSimRun).Main

@@ -12,6 +12,8 @@ Author:
 
 One of the distribution management system's (DMS) application systems resposible for congestion prediction of distribution network in day ahead time window and addressing any probable congestion using market-based solutions (local flexibility market (LFM)).
 
+The component is only deployable in the [SimCES ](https://simcesplatform.github.io/)platform as an [externaly managed component](https://simcesplatform.github.io/core_workflow-start-end/#externally-managed-components).
+
 **Workflow of the PGO**
 
 **1**- In the first epoch, NIS component in the SimCES environment publishes the network information system ([NIS](https://simcesplatform.github.io/energy_msg-init-nis-networkcomponentinfo/)) and CIS publishes customer information system ([CIS](https://simcesplatform.github.io/energy_msg-init-cis-customerinfo/)) to the RabbitMQ broker topics "Init.NIS.#" and "Init.CIS.CustomerInfo" respectively. By listening to the topics, PGO has access to NIS and CIS data.
