@@ -42,9 +42,9 @@ To connect Matlab and RabbitMQ please visit the following page:
 
 https://kannisto.github.io/Cocop.AmqpMathToolConnector
 
-https://git.ain.rd.tut.fi/procemplus/amqpmathtoolintegration
+https://github.com/simcesplatform/AmqpMathToolIntegration
 
-The following libraries were utilised in development. Therefore, all of the libraries should be downloaded and utilized based on instructions given in above webpages [1](https://kannisto.github.io/Cocop.AmqpMathToolConnector) and [2](https://git.ain.rd.tut.fi/procemplus/amqpmathtoolintegration)
+The following libraries were utilised in development. Therefore, all of the libraries should be downloaded and utilized based on instructions given in above webpages [1](https://kannisto.github.io/Cocop.AmqpMathToolConnector) and [2](https://github.com/simcesplatform/AmqpMathToolIntegration)
 
 amqp-client-4.2.2.jar
 
